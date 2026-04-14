@@ -14,13 +14,18 @@ rules:
     decision: rewrite
     rewrite_to: 'git \1'
 
-  # Read-only inspection
+  # Read-only inspection (filesystem + system info)
   - name: fs-read
-    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname)(\s|$)'
+    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname|uptime|id|groups|free|nproc|arch)(\s|$)'
     decision: allow
 
   - name: search
     match: '^(grep|rg|fd|ack|ag)(\s|$)'
+    decision: allow
+
+  # Text-processing pipe helpers — all read stdin / write stdout.
+  - name: pipe-helpers
+    match: '^(sort|uniq|cut|tr|column|nl|rev|fold|paste|join|comm)(\s|$)'
     decision: allow
 
   - name: cd
@@ -46,7 +51,7 @@ rules:
 
   # Git safe writes
   - name: git-write-safe
-    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached)(\s|$)'
+    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached|init)(\s|$)'
     decision: allow
 
   # Git destructive — deny
@@ -65,9 +70,10 @@ rules:
     decision: deny
     reason: "clean -f deletes untracked files — ask explicitly"
 
-  # Test / lint / typecheck runners
+  # Test / lint / typecheck runners. `(\S*/)?` allows bare tool,
+  # .venv-local paths, or absolute paths like /home/u/proj/.venv/bin/python.
   - name: pytest
-    match: '^(\.venv/bin/)?python3?\s+-m\s+pytest(\s|$)'
+    match: '^(\S*/)?python3?\s+-m\s+pytest(\s|$)'
     decision: allow
 
   - name: pytest-bare
@@ -75,7 +81,7 @@ rules:
     decision: allow
 
   - name: mypy
-    match: '^(\.venv/bin/)?python3?\s+-m\s+mypy(\s|$)'
+    match: '^(\S*/)?python3?\s+-m\s+mypy(\s|$)'
     decision: allow
 
   - name: mypy-bare
@@ -83,7 +89,7 @@ rules:
     decision: allow
 
   - name: ruff
-    match: '^(\.venv/bin/)?(python3?\s+-m\s+)?ruff\s+(check|format\s+--check)(\s|$)'
+    match: '^(\S*/)?(python3?\s+-m\s+)?ruff\s+(check|format\s+--check)(\s|$)'
     decision: allow
 
   - name: tsc
@@ -108,11 +114,17 @@ rules:
     decision: allow
 
   - name: python-dash-c
-    match: '^(python|python3)\s+-c\s'
+    match: '^(\S*/)?python3?\s+-c\s'
     decision: allow
 
   - name: python-version
-    match: '^(python|python3|node|npm)\s+--version$'
+    match: '^(\S*/)?(python3?|node|npm)\s+--version$'
+    decision: allow
+
+  # GitHub CLI — read-only subcommands only. Writes (repo create, pr create,
+  # issue close, etc.) stay in the classifier.
+  - name: gh-read
+    match: '^gh\s+(auth\s+status|repo\s+view|pr\s+(view|list|diff|checks|status)|issue\s+(view|list)|browse|label\s+list|run\s+(list|view))(\s|$)'
     decision: allow
 
   # Project-local helpers (autosorter)

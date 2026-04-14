@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from smart_approve.config import ClassifierConfig, Config, Defaults, LogConfig, Rule
+import pytest
+
+from smart_approve.config import ClassifierConfig, Config, Defaults, LogConfig, Rule, load
 from smart_approve.engine import evaluate
 
 
@@ -85,3 +87,78 @@ def test_compound_all_allow():
     r = evaluate("cd /home/x && git add .", c)
     assert r.decision == "allow"
     assert len(r.leaves) == 2
+
+
+# ---- Default-config rule coverage for patterns mined from the live log ----
+
+@pytest.fixture(scope="module")
+def default_cfg(monkeypatch_module) -> Config:
+    return load()
+
+
+@pytest.fixture(scope="module")
+def monkeypatch_module():
+    # Session-scoped monkeypatch substitute for isolating env.
+    from _pytest.monkeypatch import MonkeyPatch
+    mp = MonkeyPatch()
+    mp.setenv("SMART_APPROVE_CONFIG_GLOBAL", "/nonexistent")
+    mp.setenv("SMART_APPROVE_CONFIG_LOCAL", "/nonexistent")
+    yield mp
+    mp.undo()
+
+
+@pytest.mark.parametrize(
+    "command,expected_rule",
+    [
+        # sys-info read-only (fs-read)
+        ("uptime", "fs-read"),
+        ("id", "fs-read"),
+        ("id faxik", "fs-read"),
+        ("free -h", "fs-read"),
+        ("nproc", "fs-read"),
+        # pipe helpers
+        ("sort -u", "pipe-helpers"),
+        ("uniq -c", "pipe-helpers"),
+        ("cut -f1", "pipe-helpers"),
+        ("tr -d ' '", "pipe-helpers"),
+        # git init
+        ("git init -b main", "git-write-safe"),
+        # generalized python path
+        (".venv/bin/python -m pytest", "pytest"),
+        ("/home/u/proj/.venv/bin/python -m pytest tests/", "pytest"),
+        (".venv/bin/python -c \"print(1)\"", "python-dash-c"),
+        ("/abs/path/python3 -m mypy src/", "mypy"),
+        # gh-read
+        ("gh auth status", "gh-read"),
+        ("gh repo view faxik/smart-approve", "gh-read"),
+        ("gh pr list", "gh-read"),
+        ("gh pr checks", "gh-read"),
+    ],
+)
+def test_default_rules_match_mined_commands(default_cfg: Config, command: str, expected_rule: str):
+    r = evaluate(command, default_cfg)
+    assert r.decision == "allow", f"{command!r} should be allowed"
+    assert r.leaves[0].matched_rule == expected_rule, (
+        f"{command!r} expected rule {expected_rule}, got {r.leaves[0].matched_rule}"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "gh repo create faxik/new-thing --public",  # writes → unmatched → classifier
+        "gh pr create --fill",
+    ],
+)
+def test_gh_write_commands_still_escalate(default_cfg: Config, command: str):
+    r = evaluate(command, default_cfg)
+    assert r.decision is None, f"{command!r} must not auto-allow"
+
+
+def test_piped_jq_sort_uniq_fully_allowed(default_cfg: Config):
+    # This exact shape was hitting the classifier in prod before the pipe-helpers rule.
+    r = evaluate("jq -r '.command' ~/log.jsonl | sort | uniq -c | sort -rn | head -30", default_cfg)
+    assert r.decision == "allow"
+    # 5 leaves: jq, sort, uniq -c, sort -rn, head -30
+    assert len(r.leaves) == 5
+    assert all(lt.decision == "allow" for lt in r.leaves)
