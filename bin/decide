@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# smart-approve PreToolUse hook entry point.
+# Reads hook input JSON on stdin, writes permission decision JSON on stdout.
+# On any failure, exits 0 silently so Claude Code falls through to normal permission flow.
+
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PY="$PROJECT_ROOT/.venv/bin/python"
+
+# Kill switch — set SMART_APPROVE_DISABLE=1 to bypass entirely.
+if [ "${SMART_APPROVE_DISABLE:-0}" = "1" ]; then
+  exit 0
+fi
+
+if [ ! -x "$PY" ]; then
+  exit 0
+fi
+
+exec "$PY" -m smart_approve

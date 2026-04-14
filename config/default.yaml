@@ -1,0 +1,176 @@
+# smart-approve default ruleset.
+# First matching rule wins per leaf. Deny always beats allow at aggregation time.
+# Unmatched leaves → classifier fallback.
+
+log:
+  path: ~/.claude/smart-approve/decisions.jsonl
+  rotate_mb: 10
+  keep: 5
+
+rules:
+  # Rewrites — normalize common prefixes so later rules match more commands.
+  - name: git-dash-C
+    match: '^git\s+-C\s+\S+\s+(.*)$'
+    decision: rewrite
+    rewrite_to: 'git \1'
+
+  # Read-only inspection
+  - name: fs-read
+    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname)(\s|$)'
+    decision: allow
+
+  - name: search
+    match: '^(grep|rg|fd|ack|ag)(\s|$)'
+    decision: allow
+
+  - name: cd
+    match: '^cd(\s|$)'
+    decision: allow
+
+  - name: mkdir-p
+    match: '^mkdir\s+-p(\s|$)'
+    decision: allow
+
+  - name: echo-printf
+    match: '^(echo|printf|date|uname|whoami|hostname)(\s|$)'
+    decision: allow
+
+  - name: env-read
+    match: '^env$'
+    decision: allow
+
+  # Git read
+  - name: git-read
+    match: '^git\s+(status|log|diff|show|branch|remote|blame|ls-files|ls-tree|rev-parse|worktree|describe|shortlog|reflog|tag|cat-file|merge-base|config\s+--get|stash\s+list)(\s|$)'
+    decision: allow
+
+  # Git safe writes
+  - name: git-write-safe
+    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached)(\s|$)'
+    decision: allow
+
+  # Git destructive — deny
+  - name: git-push-force
+    match: '^git\s+push\s+--force'
+    decision: deny
+    reason: "force push — ask explicitly"
+
+  - name: git-reset-hard
+    match: '^git\s+reset\s+--hard'
+    decision: deny
+    reason: "reset --hard discards work — ask explicitly"
+
+  - name: git-clean-force
+    match: '^git\s+clean\s+-[a-zA-Z]*f'
+    decision: deny
+    reason: "clean -f deletes untracked files — ask explicitly"
+
+  # Test / lint / typecheck runners
+  - name: pytest
+    match: '^(\.venv/bin/)?python3?\s+-m\s+pytest(\s|$)'
+    decision: allow
+
+  - name: pytest-bare
+    match: '^pytest(\s|$)'
+    decision: allow
+
+  - name: mypy
+    match: '^(\.venv/bin/)?python3?\s+-m\s+mypy(\s|$)'
+    decision: allow
+
+  - name: mypy-bare
+    match: '^mypy(\s|$)'
+    decision: allow
+
+  - name: ruff
+    match: '^(\.venv/bin/)?(python3?\s+-m\s+)?ruff\s+(check|format\s+--check)(\s|$)'
+    decision: allow
+
+  - name: tsc
+    match: '^tsc\s+--noEmit(\s|$)'
+    decision: allow
+
+  - name: npm-safe
+    match: '^npm\s+(test|run\s+(lint|test|typecheck|check|build))(\s|$)'
+    decision: allow
+
+  - name: cargo-safe
+    match: '^cargo\s+(check|test|clippy)(\s|$)'
+    decision: allow
+
+  - name: go-safe
+    match: '^go\s+(test|vet|build)(\s|$)'
+    decision: allow
+
+  # Tooling
+  - name: jq-yq
+    match: '^(jq|yq)(\s|$)'
+    decision: allow
+
+  - name: python-dash-c
+    match: '^(python|python3)\s+-c\s'
+    decision: allow
+
+  - name: python-version
+    match: '^(python|python3|node|npm)\s+--version$'
+    decision: allow
+
+  # Project-local helpers (autosorter)
+  - name: worktree-scripts
+    match: '^tools/(worktree-setup|worktree-finish|pre-finish-checks)\.(sh|py)(\s|$)'
+    decision: allow
+
+  - name: chmod-plus-x
+    match: '^chmod\s+\+x(\s|$)'
+    decision: allow
+
+  # Hard deny list
+  - name: rm-rf-root
+    match: '^rm\s+-[a-zA-Z]*[rf]\s+/(\s|$)'
+    decision: deny
+    reason: "rm -rf / → absolutely not"
+
+  - name: sudo
+    match: '^sudo(\s|$)'
+    decision: deny
+    reason: "sudo requires explicit user authorization"
+
+  - name: shutdown
+    match: '^(shutdown|reboot|poweroff|halt)(\s|$)'
+    decision: deny
+    reason: "host-level control — not a dev operation"
+
+  - name: curl-pipe-sh
+    match: '(curl|wget).*\|\s*(sh|bash|zsh)(\s|$)'
+    decision: deny
+    reason: "curl | sh from network — ask explicitly"
+
+ast_escalate:
+  - command_substitution
+  - process_substitution
+  - heredoc
+  - backticks
+  - eval
+  - source_or_dot
+
+classifier:
+  enabled: true
+  model: claude-haiku-4-5-20251001
+  timeout_s: 3.0
+  system_prompt_file: prompts/classify.md
+  # Auth resolution — first hit wins:
+  #   1. oauth_token_env — read OAuth bearer from the named env var
+  #   2. oauth_token_file — read OAuth bearer from file
+  #                         (raw token, or ~/.claude/.credentials.json shape)
+  #   3. CLAUDE_CODE_OAUTH_TOKEN env (auto-set by the `claude` CLI for child processes)
+  #   4. ANTHROPIC_AUTH_TOKEN env (SDK's documented OAuth env var)
+  #   5. ANTHROPIC_API_KEY env
+  # Leave all commented to rely on whatever's already in the environment
+  # (ANTHROPIC_API_KEY keeps working out of the box).
+  # oauth_token_env: CLAUDE_CODE_OAUTH_TOKEN
+  # oauth_token_file: ~/.claude/.credentials.json
+
+defaults:
+  on_classifier_error: ask
+  on_parse_error: ask
+  on_hook_error: ask
