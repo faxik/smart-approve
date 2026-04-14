@@ -50,10 +50,13 @@ class ClassifierConfig:
     model: str = "claude-haiku-4-5-20251001"
     timeout_s: float = 3.0
     system_prompt_file: Path | None = None
-    # OAuth: if set, bearer token is resolved from this env var (takes precedence over API key).
+    # API key resolved from config (highest precedence — lets the hook use a
+    # dedicated key so you can see its billing in isolation).
+    api_key: str | None = None
+    api_key_env: str | None = None
+    # OAuth: retained for forward-compat but Anthropic's Messages API currently
+    # rejects OAuth tokens with 401, so these paths are effectively dead today.
     oauth_token_env: str | None = None
-    # OAuth: if set, bearer token is read from this file — raw token OR
-    # ~/.claude/.credentials.json shape {"claudeAiOauth": {"accessToken": "..."}}.
     oauth_token_file: Path | None = None
 
 
@@ -225,6 +228,8 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         model=merged_classifier.get("model", cls_base.model),
         timeout_s=float(merged_classifier.get("timeout_s", cls_base.timeout_s)),
         system_prompt_file=spf,
+        api_key=merged_classifier.get("api_key"),
+        api_key_env=merged_classifier.get("api_key_env"),
         oauth_token_env=merged_classifier.get("oauth_token_env"),
         oauth_token_file=otf,
     )

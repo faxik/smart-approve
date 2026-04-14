@@ -44,13 +44,36 @@ def _read_token_file(path: Path) -> str | None:
     return raw
 
 
+_PLACEHOLDER_MARKERS = ("REPLACE", "PLACEHOLDER", "xxxx", "TODO", "CHANGEME")
+
+
+def _is_real_key(value: str | None) -> bool:
+    if not value:
+        return False
+    v = value.strip()
+    if len(v) < 10:
+        return False
+    upper = v.upper()
+    return not any(m in upper for m in _PLACEHOLDER_MARKERS)
+
+
 def _resolve_auth(cfg: ClassifierConfig) -> tuple[dict[str, str], str | None]:
     """Resolve credentials in priority order.
 
     Returns (kwargs_for_Anthropic, source_label). kwargs is empty if nothing found.
-    Config-specified sources win, then Claude Code's OAuth env vars, then
-    ANTHROPIC_API_KEY as the final fallback so existing setups keep working.
+
+    Priority (first hit wins):
+      1. config.classifier.api_key        — literal key in config file
+      2. config.classifier.api_key_env    — read key from named env var
+      3. config.classifier.oauth_token_env / oauth_token_file (forward-compat; today 401s)
+      4. CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN env vars (same caveat)
+      5. ANTHROPIC_API_KEY env
     """
+    if _is_real_key(cfg.api_key):
+        return {"api_key": cfg.api_key}, "config:api_key"  # type: ignore[dict-item]
+    if cfg.api_key_env:
+        if _is_real_key(val := os.environ.get(cfg.api_key_env)):
+            return {"api_key": val}, f"config:api_key_env={cfg.api_key_env}"  # type: ignore[dict-item]
     if cfg.oauth_token_env:
         if tok := os.environ.get(cfg.oauth_token_env):
             return {"auth_token": tok}, f"oauth_token_env={cfg.oauth_token_env}"

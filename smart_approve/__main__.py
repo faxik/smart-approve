@@ -26,7 +26,7 @@ def _emit(decision: str, reason: str, suppress: bool = True) -> None:
     sys.stdout.flush()
 
 
-def main() -> int:
+def hook_main() -> int:
     # Kill switch — any crash in our code should also fall through to default permissions.
     if os.environ.get("SMART_APPROVE_DISABLE") == "1":
         return 0  # no decision → claude code handles normally
@@ -102,6 +102,14 @@ def main() -> int:
     logger_mod.log(entry, config.log)
     _emit(decision, reason)
     return 0
+
+
+def main() -> int:
+    """Dispatch: if args are present, run CLI; otherwise act as the hook."""
+    if len(sys.argv) > 1:
+        from . import cli
+        return cli.main(sys.argv[1:])
+    return hook_main()
 
 
 if __name__ == "__main__":

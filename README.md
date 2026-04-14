@@ -96,6 +96,28 @@ Grep recurring classifier calls to find patterns worth promoting to explicit rul
 jq 'select(.classifier_used) | .command' ~/.claude/smart-approve/decisions.jsonl | sort | uniq -c | sort -rn
 ```
 
+## Pruning the log
+
+After you've digested a batch of entries (turned them into rules, or decided they're one-off noise), prune them so next review focuses on fresh patterns:
+
+```bash
+# Dry run — show what would be removed.
+smart-approve prune --command-matches '^source ' --dry-run
+
+# Apply.
+smart-approve prune --command-matches '^source '
+
+# AND'd filters: remove only matching commands in a specific session.
+smart-approve prune --session-id abc123 --command-matches '^git push'
+
+# Time window.
+smart-approve prune --before 2026-04-14T00:00:00+00:00
+```
+
+All filters AND together. Malformed lines are preserved verbatim. At least one filter is required — running `prune` bare is refused so you don't accidentally wipe the log.
+
+Available filters: `--before`, `--after`, `--session-id` (repeatable), `--command-matches` (regex), `--decision`, `--classifier-used`, `--cwd-prefix`.
+
 ## Classifier
 
 Uses Haiku 4.5 via the Anthropic SDK with prompt caching on the system prompt (5-minute TTL → amortizes to ~free after warmup). Falls back to `ask` if no credential resolves or the call errors / times out.
@@ -104,21 +126,26 @@ Uses Haiku 4.5 via the Anthropic SDK with prompt caching on the system prompt (5
 
 Resolved in this order (first hit wins):
 
-1. `classifier.oauth_token_env` (YAML) — read OAuth bearer from the named env var
-2. `classifier.oauth_token_file` (YAML) — read bearer from file (raw token, or `~/.claude/.credentials.json` shape `{"claudeAiOauth": {"accessToken": "..."}}`)
-3. `CLAUDE_CODE_OAUTH_TOKEN` env
-4. `ANTHROPIC_AUTH_TOKEN` env (Anthropic SDK's documented OAuth env var)
-5. `ANTHROPIC_API_KEY` env
+1. `classifier.api_key` (YAML) — literal key in the config file
+2. `classifier.api_key_env` (YAML) — read key from the named env var
+3. `classifier.oauth_token_env` (YAML) — OAuth bearer from env var *(see note)*
+4. `classifier.oauth_token_file` (YAML) — OAuth bearer from file *(see note)*
+5. `CLAUDE_CODE_OAUTH_TOKEN` env *(see note)*
+6. `ANTHROPIC_AUTH_TOKEN` env *(see note)*
+7. `ANTHROPIC_API_KEY` env
 
-OAuth bearer goes to `Anthropic(auth_token=...)`, API key goes to `Anthropic(api_key=...)`. Example project config that pins the classifier to your Claude Code credentials file:
+Recommended: drop a dedicated key into `~/.config/smart-approve/config.yaml` so you can see its billing in isolation from your main Claude Code usage. `chmod 600` the file.
 
 ```yaml
-# .smart-approve.yaml or ~/.config/smart-approve/config.yaml
+# ~/.config/smart-approve/config.yaml
 classifier:
-  oauth_token_file: ~/.claude/.credentials.json
+  api_key: sk-ant-api03-...       # or:
+  api_key_env: SMART_APPROVE_ANTHROPIC_KEY
 ```
 
-With nothing configured, whichever of the env vars above is present in the hook's environment wins — so `ANTHROPIC_API_KEY`-only setups keep working unchanged.
+Obvious placeholders (`REPLACE`, `PLACEHOLDER`, `TODO`, `CHANGEME`, or strings shorter than 10 chars) are detected and skipped, so a stubbed-out config falls through to the next source cleanly.
+
+**OAuth note:** the OAuth paths exist in the code but Anthropic's Messages API currently returns `401 "OAuth authentication is currently not supported"` on bearer tokens from `~/.claude/.credentials.json`. The subscription-backed billing path only works through the `claude` CLI itself, not the public Messages API. These fields stay in place for forward-compat.
 
 ## Dev
 
