@@ -66,7 +66,24 @@ def evaluate(command: str, config: Config) -> EngineResult:
     parsed = parse(command)
 
     if parsed.parse_error:
-        fallback = config.defaults.on_parse_error
+        action = config.defaults.on_parse_error
+        if action == "classify":
+            # bashlex has enough rough edges that escalating to the classifier
+            # is safer than a fixed decision.
+            return EngineResult(
+                parsed=parsed,
+                leaves=[
+                    LeafTrace(
+                        original=command,
+                        final=command,
+                        decision=None,
+                        matched_rule="parse-error",
+                        reason=parsed.parse_error,
+                    )
+                ],
+                decision=None,
+            )
+        fallback: Decision = action
         return EngineResult(
             parsed=parsed,
             leaves=[

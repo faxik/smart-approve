@@ -24,7 +24,14 @@ from typing import Any
 
 import yaml
 
-from .types import DECISION_VALUES, RULE_DECISION_VALUES, Decision, RuleDecision
+from .types import (
+    DECISION_VALUES,
+    PARSE_ERROR_ACTION_VALUES,
+    RULE_DECISION_VALUES,
+    Decision,
+    ParseErrorAction,
+    RuleDecision,
+)
 
 
 @dataclass
@@ -63,7 +70,7 @@ class ClassifierConfig:
 @dataclass
 class Defaults:
     on_classifier_error: Decision = "ask"
-    on_parse_error: Decision = "ask"
+    on_parse_error: ParseErrorAction = "ask"
     on_hook_error: Decision = "ask"
 
 
@@ -244,7 +251,7 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         on_parse_error=_validated_decision(  # type: ignore[arg-type]
             merged_defaults.get("on_parse_error", def_base.on_parse_error),
             "defaults.on_parse_error",
-            DECISION_VALUES,
+            PARSE_ERROR_ACTION_VALUES,
         ),
         on_hook_error=_validated_decision(  # type: ignore[arg-type]
             merged_defaults.get("on_hook_error", def_base.on_hook_error),

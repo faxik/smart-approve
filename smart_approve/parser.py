@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 
@@ -18,6 +19,42 @@ _EXOTIC_NODE_KINDS = {
     "coproc": "coproc",
 }
 
+# bashlex can't match closing delimiters when the heredoc tag is quoted
+# (<<'EOF' or <<"EOF"). We strip the quotes on retry so the parse succeeds;
+# the "no parameter expansion inside body" semantic is irrelevant to us
+# because we don't reason about heredoc bodies anyway.
+_HEREDOC_QUOTED_TAG = re.compile(r"""<<(-?)(['"])([A-Za-z_][A-Za-z0-9_]*)\2""")
+
+
+def _bashlex_parse_with_retry(cmd: str) -> tuple[list[object] | None, str | None, bool]:
+    """Parse with bashlex, retrying known workarounds on failure.
+
+    Returns (trees, error, heredoc_retry_hit). ``heredoc_retry_hit`` is True
+    when the unquote retry succeeded — the caller uses this to inject a
+    heredoc marker into exotic since the unquoted form may not expose one.
+    """
+    import bashlex
+
+    try:
+        return bashlex.parse(cmd), None, False
+    except Exception as e:
+        first_error = str(e)
+
+    alt = _HEREDOC_QUOTED_TAG.sub(r"<<\1\3", cmd)
+    if alt != cmd:
+        try:
+            return bashlex.parse(alt), None, True
+        except Exception:
+            pass
+
+    if not cmd.endswith("\n"):
+        try:
+            return bashlex.parse(cmd + "\n"), None, False
+        except Exception:
+            pass
+
+    return None, first_error, False
+
 
 def parse(cmd: str) -> ParsedCommand:
     """Split a bash command into leaf CommandNodes + detect exotic constructs.
@@ -27,7 +64,7 @@ def parse(cmd: str) -> ParsedCommand:
     try to reason about them with regex rules.
     """
     try:
-        import bashlex
+        import bashlex  # noqa: F401
     except ImportError:  # pragma: no cover
         return ParsedCommand(leaves=[cmd], parse_error="bashlex not installed")
 
@@ -35,10 +72,13 @@ def parse(cmd: str) -> ParsedCommand:
     if "`" in cmd:
         exotic.append("backticks")
 
-    try:
-        trees = bashlex.parse(cmd)
-    except Exception as e:
-        return ParsedCommand(leaves=[cmd], exotic=exotic, parse_error=str(e))
+    trees, err, heredoc_retry_hit = _bashlex_parse_with_retry(cmd)
+    if trees is None:
+        return ParsedCommand(leaves=[cmd], exotic=exotic, parse_error=err)
+    if heredoc_retry_hit:
+        # bashlex sometimes elides the heredoc node from the retried AST, so
+        # flag it here to guarantee the engine escalates.
+        exotic.append("heredoc")
 
     leaves: list[str] = []
 

@@ -184,5 +184,8 @@ classifier:
 
 defaults:
   on_classifier_error: ask
-  on_parse_error: ask
+  # "classify" = route unparseable commands (e.g. bashlex choking on quoted
+  # heredoc tags like <<'EOF') to the Haiku classifier rather than falling
+  # through to a user prompt. Use "ask" to restore the old behavior.
+  on_parse_error: classify
   on_hook_error: ask

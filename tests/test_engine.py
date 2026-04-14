@@ -155,6 +155,42 @@ def test_gh_write_commands_still_escalate(default_cfg: Config, command: str):
     assert r.decision is None, f"{command!r} must not auto-allow"
 
 
+def test_parse_error_classify_routes_to_classifier():
+    # Craft an input that bashlex genuinely can't parse even after retries.
+    c = _cfg([_rule("ls", r"^ls(\s|$)", "allow")])
+    c.defaults.on_parse_error = "classify"
+    r = evaluate("cat <<EOF\nno terminator here", c)
+    assert r.parsed.parse_error is not None
+    assert r.decision is None  # → classifier fallback
+    assert r.leaves[0].matched_rule == "parse-error"
+
+
+def test_parse_error_ask_preserves_backcompat():
+    c = _cfg([_rule("ls", r"^ls(\s|$)", "allow")])
+    c.defaults.on_parse_error = "ask"
+    r = evaluate("cat <<EOF\nno terminator here", c)
+    assert r.parsed.parse_error is not None
+    assert r.decision == "ask"
+
+
+def test_quoted_heredoc_commit_escalates_not_parse_error():
+    # The real command from the log that was hitting parse-error before the
+    # retry. After the fix it parses, detects exotic (heredoc + cmd-sub),
+    # and escalates to the classifier (decision=None).
+    cmd = (
+        "git add f && git commit -m \"$(cat <<'EOF'\n"
+        "chore: bump\n\n"
+        "body\n"
+        "EOF\n"
+        ")\""
+    )
+    c = _cfg([_rule("git-write", r"^git\s+(add|commit)", "allow")])
+    r = evaluate(cmd, c)
+    assert r.parsed.parse_error is None
+    assert r.exotic_escalation is True
+    assert r.decision is None
+
+
 def test_piped_jq_sort_uniq_fully_allowed(default_cfg: Config):
     # This exact shape was hitting the classifier in prod before the pipe-helpers rule.
     r = evaluate("jq -r '.command' ~/log.jsonl | sort | uniq -c | sort -rn | head -30", default_cfg)
