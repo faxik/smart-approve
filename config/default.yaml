@@ -38,8 +38,9 @@ rules:
   # `cat`, `diff`, `cmp` promoted from classifier — high-frequency safe reads.
   # `ps`, `pgrep` are read-only (NOT `pkill`/`kill` which mutate).
   # `nvidia-smi`, `sleep`, `lscpu`, `lsblk` are harmless inspection.
+  # `test`/`[` are POSIX file-test builtins — pure predicates, no side effects.
   - name: fs-read
-    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname|uptime|id|groups|free|nproc|arch|cat|diff|cmp|ps|pgrep|nvidia-smi|sleep|lscpu|lsblk|lspci|lsusb|xxd|od|md5sum|sha1sum|sha256sum)(\s|$)'
+    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname|uptime|id|groups|free|nproc|arch|cat|diff|cmp|ps|pgrep|nvidia-smi|sleep|lscpu|lsblk|lspci|lsusb|xxd|od|md5sum|sha1sum|sha256sum|test)(\s|$)'
     decision: allow
 
   - name: search
@@ -110,8 +111,11 @@ rules:
     match: '^(\S*/)?python3?\s+-m\s+mypy(\s|$)'
     decision: allow
 
+  # Bare `mypy` or any `path/to/.venv/bin/mypy` invocation. Path-tolerant so
+  # absolute-venv compound chains (`/abs/.venv/bin/mypy --strict ...`) match
+  # without escalating the whole chain to the classifier.
   - name: mypy-bare
-    match: '^mypy(\s|$)'
+    match: '^(\S*/)?mypy(\s|$)'
     decision: allow
 
   - name: ruff
@@ -137,6 +141,14 @@ rules:
   # Tooling
   - name: jq-yq
     match: '^(jq|yq)(\s|$)'
+    decision: allow
+
+  # sqlite3 read-only: queries starting with SELECT/PRAGMA, or .schema/.tables/
+  # .databases/.indexes/.headers/.dump dot-commands. Writes (INSERT/UPDATE/
+  # DELETE/DROP/ALTER/CREATE/REPLACE/ATTACH) stay in the classifier.
+  # Case-insensitive via inline (?i).
+  - name: sqlite3-read
+    match: '(?i)^sqlite3(\s+-\S+)*\s+\S+\s+[''"]\s*(SELECT|PRAGMA|WITH|EXPLAIN|\.schema|\.tables|\.databases|\.indexes|\.headers|\.dump|\.show|\.help)\b'
     decision: allow
 
   - name: python-dash-c
