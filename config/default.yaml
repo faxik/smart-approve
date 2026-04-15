@@ -14,9 +14,32 @@ rules:
     decision: rewrite
     rewrite_to: 'git \1'
 
-  # Read-only inspection (filesystem + system info)
+  # Strip `timeout [flags] N[smhd] ...` wrapper so the inner command gets
+  # evaluated normally. Rewrite loop caps at depth 3 in the engine.
+  - name: timeout-prefix
+    match: '^timeout\s+(?:-\S+\s+)*\d+[smhd]?\s+(.*)$'
+    decision: rewrite
+    rewrite_to: '\1'
+
+  # Strip `nohup ...` wrapper.
+  - name: nohup-prefix
+    match: '^nohup\s+(.*)$'
+    decision: rewrite
+    rewrite_to: '\1'
+
+  # Strip one or more `VAR=value ` env-var assignment prefixes in a single
+  # rewrite so multi-var inputs don't burn through the depth-3 rewrite cap.
+  - name: env-var-prefix
+    match: '^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+(.*)$'
+    decision: rewrite
+    rewrite_to: '\1'
+
+  # Read-only inspection (filesystem + system info + process state).
+  # `cat`, `diff`, `cmp` promoted from classifier — high-frequency safe reads.
+  # `ps`, `pgrep` are read-only (NOT `pkill`/`kill` which mutate).
+  # `nvidia-smi`, `sleep`, `lscpu`, `lsblk` are harmless inspection.
   - name: fs-read
-    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname|uptime|id|groups|free|nproc|arch)(\s|$)'
+    match: '^(ls|pwd|tree|find|stat|file|du|df|wc|which|type|whereis|head|tail|readlink|realpath|basename|dirname|uptime|id|groups|free|nproc|arch|cat|diff|cmp|ps|pgrep|nvidia-smi|sleep|lscpu|lsblk|lspci|lsusb|xxd|od|md5sum|sha1sum|sha256sum)(\s|$)'
     decision: allow
 
   - name: search
@@ -49,9 +72,12 @@ rules:
     match: '^git\s+(status|log|diff|show|branch|remote|blame|ls-files|ls-tree|rev-parse|worktree|describe|shortlog|reflog|tag|cat-file|merge-base|config\s+--get|stash\s+list)(\s|$)'
     decision: allow
 
-  # Git safe writes
+  # Git safe writes.
+  # `merge` included — merge --no-ff/--ff-only is routine; dangerous cases
+  # (--abort, conflict resolution) remain safe because the workdir is already
+  # version-controlled.
   - name: git-write-safe
-    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached|init)(\s|$)'
+    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached|init|merge|cherry-pick|revert)(\s|$)'
     decision: allow
 
   # Git destructive — deny
