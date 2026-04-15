@@ -16,6 +16,8 @@ uv venv --python 3.12 && uv pip install -e .   # first-time setup
 SMART_APPROVE_DISABLE=1 ./bin/decide < ...     # kill switch (bypasses everything)
 
 # CLI (non-hook mode — triggered by presence of argv):
+smart-approve stats                            # decision-log summary + rule-promotion candidates
+smart-approve stats --since 2026-04-14 --top 15
 smart-approve prune --command-matches '^source ' --dry-run
 smart-approve prune --session-id abc123 --command-matches '^git push'
 ```
@@ -86,8 +88,10 @@ OAuth bearer is passed as `Anthropic(auth_token=...)`; API key as `Anthropic(api
 Every invocation writes one JSONL line to the path in `config.log.path` (default `~/.claude/smart-approve/decisions.jsonl`, rotated at 10 MB × 5). To find recurring classifier calls worth promoting to explicit rules:
 
 ```bash
-jq 'select(.classifier_used) | .command' ~/.claude/smart-approve/decisions.jsonl | sort | uniq -c | sort -rn
+smart-approve stats --top 20
 ```
+
+`stats` groups classifier-resolved commands by verdict. The `PROMOTE-CANDIDATES: classifier-allowed` section is the ranked list of commands that the classifier keeps saying "allow" to — those are the ones to encode as explicit rules in `config/default.yaml` (package-wide) or a project-local `.smart-approve.yaml`. `REVIEW: classifier-ask` surfaces commands the classifier wasn't confident about; `NOTE: classifier-deny` surfaces classifier denies. Then `smart-approve prune …` to remove entries you've digested.
 
 # context-mode — MANDATORY routing rules
 

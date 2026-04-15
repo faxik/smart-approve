@@ -90,7 +90,23 @@ JSONL at `~/.claude/smart-approve/decisions.jsonl` (rotated at 10 MB × 5):
  "final_decision":"allow","classifier_used":false,"latency_ms":3}
 ```
 
-Grep recurring classifier calls to find patterns worth promoting to explicit rules:
+## Reviewing the log
+
+`smart-approve stats` summarizes the decision log and — crucially — groups classifier-resolved commands by their final verdict so you can see which safe commands recur often enough to deserve an explicit allow rule:
+
+```bash
+smart-approve stats                     # full summary
+smart-approve stats --since 2026-04-14  # only entries on/after this ISO timestamp
+smart-approve stats --top 10            # fewer rows per section
+```
+
+Output has four sections: overall verdict counts, top rule hits (confirming your rules are earning their keep), exotic-node counts, and three ranked candidate lists:
+
+- **`PROMOTE-CANDIDATES: classifier-allowed`** — commands the classifier decided were safe. Recurring entries here are prime candidates for a new explicit rule in `default.yaml` or a project-local `.smart-approve.yaml`.
+- **`REVIEW: classifier-ask`** — commands the classifier wasn't sure about. Inspect to decide if they should become explicit deny or allow rules.
+- **`NOTE: classifier-deny`** — classifier-blocked commands.
+
+Equivalent raw query (pre-`stats` era):
 
 ```bash
 jq 'select(.classifier_used) | .command' ~/.claude/smart-approve/decisions.jsonl | sort | uniq -c | sort -rn
