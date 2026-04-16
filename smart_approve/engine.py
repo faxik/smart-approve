@@ -98,13 +98,11 @@ def evaluate(command: str, config: Config) -> EngineResult:
             decision=fallback,
         )
 
-    if any(e in config.ast_escalate for e in parsed.exotic):
-        return EngineResult(
-            parsed=parsed,
-            leaves=[LeafTrace(original=command, final=command, decision=None, matched_rule=None)],
-            decision=None,
-            exotic_escalation=True,
-        )
+    # Exotic constructs (heredocs, command substitutions, etc.) no longer
+    # short-circuit — rules are tried first.  If every leaf is resolved by
+    # rules the result stands; if any leaf is unmatched, the classifier is
+    # consulted (same as the non-exotic unmatched path).
+    has_exotic = any(e in config.ast_escalate for e in parsed.exotic)
 
     leaves: list[LeafTrace] = []
     any_unmatched = False
@@ -123,5 +121,5 @@ def evaluate(command: str, config: Config) -> EngineResult:
     if deny_reason is not None:
         return EngineResult(parsed=parsed, leaves=leaves, decision="deny", deny_reason=deny_reason)
     if any_unmatched:
-        return EngineResult(parsed=parsed, leaves=leaves, decision=None)
+        return EngineResult(parsed=parsed, leaves=leaves, decision=None, exotic_escalation=has_exotic)
     return EngineResult(parsed=parsed, leaves=leaves, decision="allow")

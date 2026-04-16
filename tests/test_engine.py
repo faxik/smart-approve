@@ -63,9 +63,18 @@ def test_rewrite_git_dash_c():
     assert r.leaves[0].rewrites  # rewrite recorded
 
 
-def test_exotic_escalates():
+def test_exotic_in_arg_rules_resolve():
+    """Exotic in argument position — rules still match the outer command."""
     c = _cfg([_rule("ls", r"^ls(\s|$)", "allow")])
     r = evaluate("ls $(id)", c)
+    assert r.decision == "allow"
+    assert r.exotic_escalation is False
+
+
+def test_exotic_unmatched_escalates():
+    """Exotic with no matching rule — escalates to classifier."""
+    c = _cfg([_rule("ls", r"^ls(\s|$)", "allow")])
+    r = evaluate("unknown_tool $(id)", c)
     assert r.decision is None
     assert r.exotic_escalation is True
 
@@ -173,10 +182,10 @@ def test_parse_error_ask_preserves_backcompat():
     assert r.decision == "ask"
 
 
-def test_quoted_heredoc_commit_escalates_not_parse_error():
-    # The real command from the log that was hitting parse-error before the
-    # retry. After the fix it parses, detects exotic (heredoc + cmd-sub),
-    # and escalates to the classifier (decision=None).
+def test_quoted_heredoc_commit_resolved_by_rules():
+    # The real command from the log — heredoc + command substitution in the
+    # commit message argument.  Both leaves (add, commit) match rules, so
+    # the exotic content doesn't force classifier escalation.
     cmd = (
         "git add f && git commit -m \"$(cat <<'EOF'\n"
         "chore: bump\n\n"
@@ -187,8 +196,9 @@ def test_quoted_heredoc_commit_escalates_not_parse_error():
     c = _cfg([_rule("git-write", r"^git\s+(add|commit)", "allow")])
     r = evaluate(cmd, c)
     assert r.parsed.parse_error is None
-    assert r.exotic_escalation is True
-    assert r.decision is None
+    assert r.decision == "allow"
+    assert len(r.leaves) == 2
+    assert all(lt.decision == "allow" for lt in r.leaves)
 
 
 def test_piped_jq_sort_uniq_fully_allowed(default_cfg: Config):
