@@ -108,7 +108,10 @@ def evaluate(command: str, config: Config) -> EngineResult:
     any_unmatched = False
     deny_reason: str | None = None
     for leaf in parsed.leaves:
-        stripped = leaf.strip()
+        # First line only: heredoc bodies and multi-line arguments are
+        # argument content, not command structure.  Rules only need the
+        # command line itself.
+        stripped = leaf.strip().split("\n", 1)[0]
         if not stripped:
             continue
         t = _apply_rules(stripped, config.rules)
