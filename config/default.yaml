@@ -195,6 +195,14 @@ rules:
     decision: deny
     reason: "curl | sh from network — ask explicitly"
 
+hints:
+  - decision: allow
+    text: "git commit with multi-line messages via heredoc $(cat <<'EOF'...EOF) — this is how Claude Code formats commit messages"
+  - decision: allow
+    text: "sed, awk, head, tail with pipes for text inspection — read-only output processing"
+  - decision: allow
+    text: "find with xargs grep for code search — read-only pattern matching"
+
 ast_escalate:
   - command_substitution
   - process_substitution

@@ -45,6 +45,15 @@ class Rule:
 
 
 @dataclass
+class Hint:
+    """Free-text policy hint injected into the classifier prompt."""
+
+    decision: Decision
+    text: str
+    source: str = "default"
+
+
+@dataclass
 class LogConfig:
     path: Path
     rotate_mb: int = 10
@@ -81,6 +90,7 @@ class Config:
     ast_escalate: set[str]
     classifier: ClassifierConfig
     defaults: Defaults
+    hints: list[Hint] = field(default_factory=list)
     sources: list[Path] = field(default_factory=list)
 
 
@@ -159,6 +169,14 @@ def _validated_decision(value: Any, field_name: str, valid: frozenset[str]) -> s
     return value
 
 
+def _build_hint(raw: dict[str, Any], source_label: str) -> Hint:
+    decision = _validated_decision(raw.get("decision"), "hint decision", DECISION_VALUES)
+    text = raw.get("text", "")
+    if not text:
+        raise ValueError("hint missing 'text' field")
+    return Hint(decision=decision, text=text, source=source_label)  # type: ignore[arg-type]
+
+
 def _build_rule(raw: dict[str, Any], source_label: str) -> Rule:
     decision = _validated_decision(raw.get("decision"), f"rule {raw.get('name')!r} decision", RULE_DECISION_VALUES)
     return Rule(
@@ -190,6 +208,7 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
     ast_escalate: set[str] = set()
     disable_rules: set[str] = set()
     layered_rules: list[tuple[str, dict[str, Any]]] = []
+    layered_hints: list[tuple[str, dict[str, Any]]] = []
 
     for path in sources:
         data = _read_yaml(path)
@@ -201,6 +220,8 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         disable_rules.update(data.get("disable_rules") or [])
         for r in data.get("rules") or []:
             layered_rules.append((label, r))
+        for h in data.get("hints") or []:
+            layered_hints.append((label, h))
 
     # Reverse per-layer order so later-loaded layers evaluate first.
     by_source: dict[str, list[dict[str, Any]]] = {}
@@ -212,6 +233,17 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         for label in reversed(ordered_labels)
         for raw in by_source[label]
         if raw.get("name") not in disable_rules
+    ]
+
+    # Hints: later layers prepend (same as rules).
+    hints_by_source: dict[str, list[dict[str, Any]]] = {}
+    for label, raw in layered_hints:
+        hints_by_source.setdefault(label, []).append(raw)
+    hint_labels = list(dict.fromkeys(label for label, _ in layered_hints))
+    hints = [
+        _build_hint(raw, label)
+        for label in reversed(hint_labels)
+        for raw in hints_by_source[label]
     ]
 
     log_cfg = LogConfig(
@@ -266,5 +298,6 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         ast_escalate=ast_escalate,
         classifier=classifier_cfg,
         defaults=defaults_cfg,
+        hints=hints,
         sources=list(sources),
     )

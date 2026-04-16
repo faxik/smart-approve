@@ -91,7 +91,8 @@ def hook_main() -> int:
         decision, reason = "ask", "default fallback"
         entry["classifier_used"] = False
     else:
-        cls = classifier_mod.classify(command, config.classifier)
+        hints_ctx = classifier_mod.format_hints(config.hints)
+        cls = classifier_mod.classify(command, config.classifier, extra_context=hints_ctx)
         decision, reason = cls.decision, cls.reason
         entry["classifier_used"] = True
         entry["classifier"] = {"decision": cls.decision, "reason": cls.reason, "error": cls.error}

@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import ClassifierConfig
+from .config import ClassifierConfig, Hint
 from .types import Decision
 
 
@@ -112,6 +112,16 @@ _CLASSIFY_TOOL = {
         "required": ["decision", "reason"],
     },
 }
+
+
+def format_hints(hints: list[Hint]) -> str | None:
+    """Format hints for injection into the classifier user message."""
+    if not hints:
+        return None
+    lines = ["User policy hints:"]
+    for h in hints:
+        lines.append(f"  {h.decision.upper()} — {h.text}")
+    return "\n".join(lines)
 
 
 def classify(command: str, cfg: ClassifierConfig, extra_context: str | None = None) -> ClassifierResult:
