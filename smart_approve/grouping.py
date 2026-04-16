@@ -24,12 +24,11 @@ from typing import Literal
 
 _PATH_RE = re.compile(r"[/\\]")
 _HASH_RE = re.compile(r"^[0-9a-f]{7,40}$")
-_NUM_RE = re.compile(r"^\d+(\.\d+)*$")
 _URL_RE = re.compile(r"^https?://")
 _EXT_RE = re.compile(r"\.\w{1,6}$")  # .py, .json, .tar.gz tail
 _LONG_FLAG_EQ = re.compile(r"^(--[a-zA-Z][\w-]*)=(.+)$")
 _SHORT_FLAG_NUM = re.compile(r"^(-[a-zA-Z])(\d.*)$")
-_SHELL_META = frozenset("$(){}<>`[]")
+_SHELL_META = frozenset("$(){}<>`")
 
 # Shell operators that terminate a segment for grouping purposes.
 _STOP_OPS = frozenset({"&&", "||", ";", "|", "|&"})
@@ -43,8 +42,8 @@ _REDIR_INLINE = frozenset({"2>&1", "2>/dev/null"})
 
 
 def _strip_heredoc(cmd: str) -> str:
-    """Remove heredoc body — everything from the first newline onward when
-    the first line contains ``<<``."""
+    """Strip everything after the first newline — heredoc bodies, multiline
+    strings, and other content that shouldn't be tokenized."""
     nl = cmd.find("\n")
     if nl < 0:
         return cmd
@@ -151,9 +150,8 @@ def _value_type(token: str) -> str | None:
         return "<STR>"
     if _HASH_RE.match(token):
         return "<HASH>"
-    if _NUM_RE.match(token):
-        return "<NUM>"
-    # Starts with digit — version, port, offset, etc.
+    # Starts with digit — version, port, offset, etc. Checked after hash
+    # (hashes can start with a-f) but before the more expensive patterns below.
     if token and token[0].isdigit():
         return "<NUM>"
     # Colon / at — image:tag, user@host, pkg@version.
@@ -292,6 +290,19 @@ def _reclassify_word(tokens: list[Token], word_pos: int) -> bool:
     return False
 
 
+def _classify_all(commands: list[str]) -> dict[str, list[Token]]:
+    """Classify all commands once — shared across approaches."""
+    return {cmd: classify(cmd) for cmd in commands}
+
+
+def _finalize(commands: list[str], token_map: dict[str, list[Token]]) -> list[Group]:
+    """Build final groups from a (possibly mutated) token map."""
+    by_fp: dict[Fingerprint, list[str]] = defaultdict(list)
+    for cmd in commands:
+        by_fp[fp_of(token_map[cmd])].append(cmd)
+    return _build_groups(by_fp)
+
+
 # ---------------------------------------------------------------------------
 # Approach 1 — Two-phase
 # ---------------------------------------------------------------------------
@@ -348,7 +359,7 @@ def group_multipass(commands: list[str], max_passes: int = 10) -> list[Group]:
 
     Guard: after reclassifying a position, the remaining word count must be >= 2.
     """
-    token_map: dict[str, list[Token]] = {cmd: classify(cmd) for cmd in commands}
+    token_map = _classify_all(commands)
 
     for _ in range(max_passes):
         by_fp: dict[Fingerprint, list[str]] = defaultdict(list)
@@ -364,11 +375,7 @@ def group_multipass(commands: list[str], max_passes: int = 10) -> list[Group]:
             for cmd in by_fp[fp]:
                 _reclassify_word(token_map[cmd], vary_pos)
 
-    # Final grouping
-    final: dict[Fingerprint, list[str]] = defaultdict(list)
-    for cmd in commands:
-        final[fp_of(token_map[cmd])].append(cmd)
-    return _build_groups(final)
+    return _finalize(commands, token_map)
 
 
 def _find_best_merge(
@@ -428,7 +435,7 @@ def group_trie(commands: list[str], branch_threshold: int = 2) -> list[Group]:
 
     Guard: after collapsing, remaining word count must be >= 2.
     """
-    token_map: dict[str, list[Token]] = {cmd: classify(cmd) for cmd in commands}
+    token_map = _classify_all(commands)
 
     # Group commands by (flags, n_words) — the "shape"
     by_shape: dict[tuple, list[str]] = defaultdict(list)
@@ -468,21 +475,18 @@ def group_trie(commands: list[str], branch_threshold: int = 2) -> list[Group]:
             for cmd in shape_cmds:
                 _reclassify_word(token_map[cmd], pos)
 
-    # Final grouping
-    final: dict[Fingerprint, list[str]] = defaultdict(list)
-    for cmd in commands:
-        final[fp_of(token_map[cmd])].append(cmd)
-    return _build_groups(final)
+    return _finalize(commands, token_map)
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-METHODS = ("twophase", "multipass", "trie")
+Method = Literal["twophase", "multipass", "trie"]
+METHODS: tuple[Method, ...] = ("twophase", "multipass", "trie")
 
 
-def group_commands(commands: list[str], method: str = "multipass") -> list[Group]:
+def group_commands(commands: list[str], method: Method = "multipass") -> list[Group]:
     """Group *commands* using the named method."""
     if method == "twophase":
         return group_twophase(commands)

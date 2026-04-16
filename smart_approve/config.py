@@ -91,6 +91,7 @@ class Config:
     classifier: ClassifierConfig
     defaults: Defaults
     hints: list[Hint] = field(default_factory=list)
+    hints_context: str | None = None  # pre-formatted for classifier injection
     sources: list[Path] = field(default_factory=list)
 
 
@@ -169,6 +170,24 @@ def _validated_decision(value: Any, field_name: str, valid: frozenset[str]) -> s
     return value
 
 
+def _layer_items(
+    pairs: list[tuple[str, dict[str, Any]]],
+    builder: Any,
+    skip_names: set[str] = frozenset(),  # type: ignore[assignment]
+) -> list:
+    """Reverse per-layer order so later-loaded layers evaluate first."""
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for label, raw in pairs:
+        by_source.setdefault(label, []).append(raw)
+    ordered = list(dict.fromkeys(label for label, _ in pairs))
+    return [
+        builder(raw, label)
+        for label in reversed(ordered)
+        for raw in by_source[label]
+        if raw.get("name") not in skip_names
+    ]
+
+
 def _build_hint(raw: dict[str, Any], source_label: str) -> Hint:
     decision = _validated_decision(raw.get("decision"), "hint decision", DECISION_VALUES)
     text = raw.get("text", "")
@@ -223,28 +242,9 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         for h in data.get("hints") or []:
             layered_hints.append((label, h))
 
-    # Reverse per-layer order so later-loaded layers evaluate first.
-    by_source: dict[str, list[dict[str, Any]]] = {}
-    for label, raw in layered_rules:
-        by_source.setdefault(label, []).append(raw)
-    ordered_labels = list(dict.fromkeys(label for label, _ in layered_rules))
-    rules = [
-        _build_rule(raw, label)
-        for label in reversed(ordered_labels)
-        for raw in by_source[label]
-        if raw.get("name") not in disable_rules
-    ]
-
-    # Hints: later layers prepend (same as rules).
-    hints_by_source: dict[str, list[dict[str, Any]]] = {}
-    for label, raw in layered_hints:
-        hints_by_source.setdefault(label, []).append(raw)
-    hint_labels = list(dict.fromkeys(label for label, _ in layered_hints))
-    hints = [
-        _build_hint(raw, label)
-        for label in reversed(hint_labels)
-        for raw in hints_by_source[label]
-    ]
+    # Layer items: later-loaded layers evaluate first (project > global > defaults).
+    rules = _layer_items(layered_rules, _build_rule, skip_names=disable_rules)
+    hints = _layer_items(layered_hints, _build_hint)
 
     log_cfg = LogConfig(
         path=_expand(merged_log.get("path", "~/.claude/smart-approve/decisions.jsonl")),
@@ -299,5 +299,16 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         classifier=classifier_cfg,
         defaults=defaults_cfg,
         hints=hints,
+        hints_context=_format_hints(hints),
         sources=list(sources),
     )
+
+
+def _format_hints(hints: list[Hint]) -> str | None:
+    """Pre-format hints for classifier injection."""
+    if not hints:
+        return None
+    lines = ["User policy hints:"]
+    for h in hints:
+        lines.append(f"  {h.decision.upper()} — {h.text}")
+    return "\n".join(lines)
