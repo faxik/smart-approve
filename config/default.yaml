@@ -52,6 +52,19 @@ rules:
     match: '^(sort|uniq|cut|tr|column|nl|rev|fold|paste|join|comm)(\s|$)'
     decision: allow
 
+  # `sed -n` is print-only (no `-i` in-place edit). Common for file-window
+  # reads: `sed -n '100,150p' path`. Writes via `-i` stay in the classifier.
+  - name: sed-read
+    match: '^sed\s+-n(\s|$)'
+    decision: allow
+
+  # `awk` / `gawk` without `-i inplace` is a pure read filter. The rare
+  # `gawk -i inplace` form falls through to the classifier via normal
+  # escalation rather than matching here.
+  - name: awk-read
+    match: '^(g?awk)(\s|$)'
+    decision: allow
+
   - name: cd
     match: '^cd(\s|$)'
     decision: allow
@@ -104,7 +117,7 @@ rules:
     decision: allow
 
   - name: pytest-bare
-    match: '^pytest(\s|$)'
+    match: '^(\S*/)?pytest(\s|$)'
     decision: allow
 
   - name: mypy
@@ -123,7 +136,7 @@ rules:
     decision: allow
 
   - name: tsc
-    match: '^tsc\s+--noEmit(\s|$)'
+    match: '^(\S*/)?tsc\s+--noEmit(\s|$)'
     decision: allow
 
   - name: npm-safe
@@ -166,8 +179,11 @@ rules:
     decision: allow
 
   # Project-local helpers (autosorter)
+  # `tools/` anchor retained so the rule still identifies a repo helper, not
+  # an arbitrary script sharing the name. `(\S*/)?` lets absolute paths
+  # (e.g. `/home/u/proj/tools/worktree-setup.sh`) match too.
   - name: worktree-scripts
-    match: '^tools/(worktree-setup|worktree-finish|pre-finish-checks)\.(sh|py)(\s|$)'
+    match: '^(\S*/)?tools/(worktree-setup|worktree-finish|pre-finish-checks)\.(sh|py)(\s|$)'
     decision: allow
 
   - name: chmod-plus-x

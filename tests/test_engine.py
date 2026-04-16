@@ -142,6 +142,21 @@ def monkeypatch_module():
         ("gh repo view faxik/smart-approve", "gh-read"),
         ("gh pr list", "gh-read"),
         ("gh pr checks", "gh-read"),
+        # path-tolerant pytest (worktree-scoped venv invocations)
+        ("/home/u/proj/.venv/bin/pytest tests/", "pytest-bare"),
+        (".venv/bin/pytest -x", "pytest-bare"),
+        # path-tolerant tsc
+        ("/home/u/proj/node_modules/.bin/tsc --noEmit", "tsc"),
+        # sed -n print-only (file-window read)
+        ("sed -n '100,150p' path/to/file.py", "sed-read"),
+        ("sed -n 1,50p file", "sed-read"),
+        # awk / gawk read filters
+        ("awk '{print $1}' file.txt", "awk-read"),
+        ("gawk -F: '{print $1}'", "awk-read"),
+        # worktree scripts, path-tolerant
+        ("tools/worktree-setup.sh branch main", "worktree-scripts"),
+        ("/home/u/proj/tools/worktree-finish.sh branch 'msg'", "worktree-scripts"),
+        ("/home/u/proj/tools/pre-finish-checks.py", "worktree-scripts"),
     ],
 )
 def test_default_rules_match_mined_commands(default_cfg: Config, command: str, expected_rule: str):
@@ -157,6 +172,9 @@ def test_default_rules_match_mined_commands(default_cfg: Config, command: str, e
     [
         "gh repo create faxik/new-thing --public",  # writes → unmatched → classifier
         "gh pr create --fill",
+        # sed -i mutates in-place — must not match sed-read.
+        "sed -i 's/foo/bar/' file.txt",
+        "sed -i.bak 's/foo/bar/' file.txt",
     ],
 )
 def test_gh_write_commands_still_escalate(default_cfg: Config, command: str):
