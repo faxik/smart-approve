@@ -199,6 +199,22 @@ class TestClassify:
         assert tokens[3].is_value
         assert tokens[3].placeholder == "<STR>"
 
+    def test_multiline_quoted_message_tokens_detected(self):
+        """CB-1: multi-line single-quoted commit messages get truncated by
+        _strip_heredoc, leaving an unclosed quote.  str.split fallback
+        produces individual word tokens that must still be detected as
+        quoted (inside the larger '...' range in the original command)."""
+        cmd = (
+            "git commit --no-verify -m 'feat(facts): Day 2 — YAML registry"
+            "\n\nMulti-line body.\n"
+            "'"
+        )
+        tokens = classify(cmd)
+        # "Day", "YAML", "registry" should all be values, not words.
+        word_raws = {t.raw for t in tokens if t.kind == "word"}
+        for w in ("Day", "YAML", "registry"):
+            assert w not in word_raws, f"{w!r} should be <STR>, not word"
+
     def test_port_mapping(self):
         tokens = classify("docker run -p 8080:80")
         # "8080:80" starts with digit → <NUM>

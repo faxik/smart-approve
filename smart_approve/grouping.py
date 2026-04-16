@@ -170,12 +170,45 @@ def _is_flag(token: str) -> bool:
     return len(token) >= 2 and token[0] == "-"
 
 
-def _was_quoted(cmd: str, token: str) -> bool:
-    """Heuristic: check if *token* appears inside quotes in *cmd*."""
-    for q in ('"', "'"):
-        if f"{q}{token}{q}" in cmd:
-            return True
-    return False
+def _quoted_ranges(cmd: str) -> list[tuple[int, int]]:
+    """Return (start, end) byte ranges of content inside quotes in *cmd*.
+
+    Handles both single and double quotes.  Inside double quotes, backslash
+    escapes the next character.  Inside single quotes, everything is literal.
+    """
+    ranges: list[tuple[int, int]] = []
+    i = 0
+    while i < len(cmd):
+        if cmd[i] in ("'", '"'):
+            q = cmd[i]
+            start = i + 1
+            i += 1
+            while i < len(cmd) and cmd[i] != q:
+                if q == '"' and cmd[i] == "\\":
+                    i += 1
+                i += 1
+            ranges.append((start, i))
+            if i < len(cmd):
+                i += 1
+        else:
+            i += 1
+    return ranges
+
+
+def _was_quoted(cmd: str, token: str, ranges: list[tuple[int, int]]) -> bool:
+    """Check if any occurrence of *token* in *cmd* falls inside a quoted range."""
+    if not ranges:
+        return False
+    start = 0
+    while True:
+        pos = cmd.find(token, start)
+        if pos == -1:
+            return False
+        end = pos + len(token)
+        for qs, qe in ranges:
+            if qs <= pos and end <= qe:
+                return True
+        start = pos + 1
 
 
 def classify(cmd: str) -> list[Token]:
@@ -186,6 +219,7 @@ def classify(cmd: str) -> list[Token]:
     ``<PATH>`` instead of falling to ``<STR>``.
     """
     tokens = tokenize(cmd)
+    ranges = _quoted_ranges(cmd)
     result: list[Token] = []
     for tok in tokens:
         if _is_flag(tok):
@@ -194,7 +228,7 @@ def classify(cmd: str) -> list[Token]:
         vt = _value_type(tok)
         if vt is not None:
             result.append(Token(raw=tok, kind="value", placeholder=vt))
-        elif _was_quoted(cmd, tok):
+        elif _was_quoted(cmd, tok, ranges):
             result.append(Token(raw=tok, kind="value", placeholder="<STR>"))
         else:
             result.append(Token(raw=tok, kind="word", placeholder=tok))
