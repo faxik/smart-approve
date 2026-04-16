@@ -13,7 +13,7 @@ def _cfg(rules: list[Rule], ast_escalate: set[str] | None = None) -> Config:
     return Config(
         log=LogConfig(path=Path("/tmp/_test.jsonl")),
         rules=rules,
-        ast_escalate=ast_escalate or {"command_substitution", "backticks", "eval"},
+        ast_escalate=ast_escalate or {"command_substitution", "eval", "coproc"},
         classifier=ClassifierConfig(enabled=False),
         defaults=Defaults(),
     )
@@ -208,3 +208,16 @@ def test_piped_jq_sort_uniq_fully_allowed(default_cfg: Config):
     # 5 leaves: jq, sort, uniq -c, sort -rn, head -30
     assert len(r.leaves) == 5
     assert all(lt.decision == "allow" for lt in r.leaves)
+
+
+def test_parse_error_classify_tries_rules_first():
+    """CB-3: on parse error + classify mode, rules are tried on the raw command
+    before falling through to the classifier."""
+    c = _cfg([_rule("cat", r"^cat(\s|$)", "allow")])
+    c.defaults.on_parse_error = "classify"
+    # This command fails both tree-sitter and bashlex (truncated heredoc).
+    r = evaluate("cat <<EOF\nno terminator here", c)
+    assert r.parsed.parse_error is not None
+    # CB-3: the first line "cat <<EOF" matches the cat rule → allow, not classifier.
+    assert r.decision == "allow"
+    assert r.leaves[0].matched_rule == "cat"

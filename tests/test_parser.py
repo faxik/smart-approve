@@ -36,9 +36,11 @@ def test_process_substitution_flagged_exotic():
     assert "process_substitution" in p.exotic
 
 
-def test_backticks_flagged_exotic():
+def test_backticks_flagged_as_command_substitution():
+    # tree-sitter represents backtick substitution as command_substitution
+    # (same node type as $(...)), not as a separate "backticks" kind.
     p = parse("echo `date`")
-    assert "backticks" in p.exotic
+    assert "command_substitution" in p.exotic
 
 
 def test_eval_flagged_exotic():
@@ -77,3 +79,56 @@ def test_quoted_heredoc_double_quoted_delimiter_parses():
     p = parse(cmd)
     assert p.parse_error is None
     assert "heredoc" in p.exotic
+
+
+# ── tree-sitter specific tests ─────────────────────────────────────────
+
+
+def test_single_quoted_backticks_no_false_positive():
+    """CB-2: backticks inside single-quoted strings are literal text, not
+    command substitution. The old raw-string check produced a false positive."""
+    p = parse("git commit -m 'fix `variable_name` issue'")
+    assert "backticks" not in p.exotic
+    assert "command_substitution" not in p.exotic
+    assert p.parse_error is None
+
+
+def test_double_quoted_backticks_are_real_substitution():
+    """Backticks inside double-quoted strings ARE command substitution in bash.
+    Flagging them as exotic is correct behavior, not a false positive."""
+    p = parse('echo "result: `date`"')
+    assert "command_substitution" in p.exotic
+
+
+def test_function_definition_flagged_exotic():
+    p = parse("foo() { echo hi; }")
+    assert "function_def" in p.exotic
+
+
+def test_heredoc_redirect_produces_correct_leaf():
+    """Redirected statements (heredocs, file redirects) include the full
+    text in the leaf, not just the bare command name."""
+    p = parse("cat <<EOF\nhello\nEOF\n")
+    assert p.parse_error is None
+    assert len(p.leaves) == 1
+    assert "cat" in p.leaves[0]
+    assert "heredoc" in p.exotic
+
+
+def test_truncated_heredoc_falls_back():
+    """Tree-sitter detects truncated heredocs as errors and falls through
+    to bashlex, which also fails — producing a parse_error."""
+    p = parse("cat <<EOF\nno terminator")
+    assert p.parse_error is not None
+
+
+def test_coproc_flagged_exotic():
+    p = parse("coproc myproc sleep 10")
+    assert "coproc" in p.exotic
+
+
+def test_subshell_extracts_inner_leaves():
+    p = parse("(cd /tmp && ls)")
+    assert p.parse_error is None
+    assert any("cd" in l for l in p.leaves)
+    assert any("ls" in l for l in p.leaves)

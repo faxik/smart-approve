@@ -68,8 +68,20 @@ def evaluate(command: str, config: Config) -> EngineResult:
     if parsed.parse_error:
         action = config.defaults.on_parse_error
         if action == "classify":
-            # bashlex has enough rough edges that escalating to the classifier
-            # is safer than a fixed decision.
+            # Try rules on the raw command before escalating to the classifier.
+            # Many parse-error commands (e.g. complex heredoc commits) still
+            # match simple regex rules perfectly well.
+            stripped = command.strip().split("\n", 1)[0]
+            if stripped:
+                t = _apply_rules(stripped, config.rules)
+                if t.decision is not None:
+                    return EngineResult(
+                        parsed=parsed,
+                        leaves=[t],
+                        decision=t.decision,
+                        deny_reason=t.reason if t.decision == "deny" else None,
+                    )
+            # No rule matched — escalate to classifier.
             return EngineResult(
                 parsed=parsed,
                 leaves=[

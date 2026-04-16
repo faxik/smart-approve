@@ -3,6 +3,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+try:
+    from tree_sitter import Language as _TSLanguage
+    from tree_sitter import Parser as _TSParser
+
+    import tree_sitter_bash as _ts_bash
+
+    _TS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _TS_AVAILABLE = False
+
 
 @dataclass
 class ParsedCommand:
@@ -11,7 +21,90 @@ class ParsedCommand:
     parse_error: str | None = None
 
 
-_EXOTIC_NODE_KINDS = {
+# ── shared epilogue ────────────────────────────────────────────────────
+
+_EXOTIC_FIRST_WORDS = {"eval": "eval", "source": "source_or_dot", ".": "source_or_dot", "coproc": "coproc"}
+
+
+def _finalize(cmd: str, leaves: list[str], exotic: list[str]) -> ParsedCommand:
+    """Post-pass exotic flagging, dedup, and fallback — shared by both backends."""
+    for leaf in leaves:
+        parts = leaf.split(None, 1)
+        if parts:
+            tag = _EXOTIC_FIRST_WORDS.get(parts[0])
+            if tag:
+                exotic.append(tag)
+    return ParsedCommand(
+        leaves=leaves or [cmd],
+        exotic=list(dict.fromkeys(exotic)),
+    )
+
+
+# ── tree-sitter backend (primary) ──────────────────────────────────────
+
+_TS_EXOTIC_MAP = {
+    "command_substitution": "command_substitution",
+    "process_substitution": "process_substitution",
+    "heredoc_redirect": "heredoc",
+    "function_definition": "function_def",
+}
+
+_TS_SUBSTITUTION_TYPES = frozenset({"command_substitution", "process_substitution"})
+
+_ts_parser: _TSParser | None = None
+
+
+def _get_ts_parser() -> _TSParser:
+    global _ts_parser
+    if _ts_parser is None:
+        _ts_parser = _TSParser(_TSLanguage(_ts_bash.language()))
+    return _ts_parser
+
+
+def _ts_parse(cmd: str) -> ParsedCommand | None:
+    """Parse with tree-sitter-bash. Returns None on error (caller falls back)."""
+    if not _TS_AVAILABLE:
+        return None
+
+    tree = _get_ts_parser().parse(cmd.encode())
+    root = tree.root_node
+    if root.has_error:
+        return None  # fall through to bashlex
+
+    leaves: list[str] = []
+    exotic: list[str] = []
+
+    def walk(node: object, in_sub: bool) -> None:
+        ntype = node.type
+
+        # Detect exotic constructs at all depths.
+        if ntype in _TS_EXOTIC_MAP:
+            exotic.append(_TS_EXOTIC_MAP[ntype])
+
+        # Extract top-level execution units as leaves.
+        if not in_sub and ntype in ("command", "redirected_statement"):
+            # Skip command nodes whose parent is redirected_statement —
+            # the parent captures the full text including redirections.
+            if ntype == "command" and node.parent and node.parent.type == "redirected_statement":
+                pass  # parent handles this
+            else:
+                leaves.append(cmd[node.start_byte : node.end_byte])
+            # Descend to detect exotic constructs inside.
+            for child in node.children:
+                walk(child, True)
+            return
+
+        child_in_sub = in_sub or ntype in _TS_SUBSTITUTION_TYPES
+        for child in node.children:
+            walk(child, child_in_sub)
+
+    walk(root, False)
+    return _finalize(cmd, leaves, exotic)
+
+
+# ── bashlex backend (fallback) ─────────────────────────────────────────
+
+_BASHLEX_EXOTIC_NODE_KINDS = {
     "commandsubstitution": "command_substitution",
     "processsubstitution": "process_substitution",
     "heredoc": "heredoc",
@@ -56,13 +149,8 @@ def _bashlex_parse_with_retry(cmd: str) -> tuple[list[object] | None, str | None
     return None, first_error, False
 
 
-def parse(cmd: str) -> ParsedCommand:
-    """Split a bash command into leaf CommandNodes + detect exotic constructs.
-
-    Returns ParsedCommand. On parse error, leaves=[cmd], parse_error set.
-    Exotic nodes are collected so the caller can decide to escalate rather than
-    try to reason about them with regex rules.
-    """
+def _bashlex_parse(cmd: str) -> ParsedCommand:
+    """Bashlex-based parsing. Used as fallback when tree-sitter has errors."""
     try:
         import bashlex  # noqa: F401
     except ImportError:  # pragma: no cover
@@ -86,8 +174,8 @@ def parse(cmd: str) -> ParsedCommand:
         kind = getattr(node, "kind", None)
 
         # Detect exotic constructs regardless of depth.
-        if kind in _EXOTIC_NODE_KINDS:
-            exotic.append(_EXOTIC_NODE_KINDS[kind])
+        if kind in _BASHLEX_EXOTIC_NODE_KINDS:
+            exotic.append(_BASHLEX_EXOTIC_NODE_KINDS[kind])
 
         # Record top-level simple commands as leaves (but still descend to find
         # any exotic constructs nested inside their words).
@@ -111,19 +199,20 @@ def parse(cmd: str) -> ParsedCommand:
     for tree in trees:
         walk(tree, False)
 
-    # Post-pass: flag leaf-level eval / source / . as exotic.
-    for leaf in leaves:
-        first = leaf.lstrip().split(None, 1)[0] if leaf.strip() else ""
-        if first == "eval":
-            exotic.append("eval")
-        elif first in {"source", "."}:
-            exotic.append("source_or_dot")
+    return _finalize(cmd, leaves, exotic)
 
-    seen: set[str] = set()
-    exotic_unique: list[str] = []
-    for e in exotic:
-        if e not in seen:
-            seen.add(e)
-            exotic_unique.append(e)
 
-    return ParsedCommand(leaves=leaves or [cmd], exotic=exotic_unique)
+# ── public API ─────────────────────────────────────────────────────────
+
+
+def parse(cmd: str) -> ParsedCommand:
+    """Split a bash command into leaf CommandNodes + detect exotic constructs.
+
+    Tries tree-sitter-bash first (99.7% parse rate). Falls back to bashlex on
+    parse errors. Returns ParsedCommand with leaves, exotic flags, and
+    optional parse_error.
+    """
+    result = _ts_parse(cmd)
+    if result is not None:
+        return result
+    return _bashlex_parse(cmd)

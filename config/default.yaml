@@ -207,9 +207,9 @@ ast_escalate:
   - command_substitution
   - process_substitution
   - heredoc
-  - backticks
   - eval
   - source_or_dot
+  - coproc
 
 classifier:
   enabled: true
