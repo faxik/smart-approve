@@ -171,10 +171,11 @@ def _is_flag(token: str) -> bool:
 
 
 def _quoted_ranges(cmd: str) -> list[tuple[int, int]]:
-    """Return (start, end) byte ranges of content inside quotes in *cmd*.
+    """Return (start, end) character ranges of content inside quotes in *cmd*.
 
     Handles both single and double quotes.  Inside double quotes, backslash
     escapes the next character.  Inside single quotes, everything is literal.
+    Unclosed quotes extend to end-of-string (matches shlex permissive behavior).
     """
     ranges: list[tuple[int, int]] = []
     i = 0
