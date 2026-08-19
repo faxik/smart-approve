@@ -406,7 +406,7 @@ def test_git_split_rule_names_tools_and_fails_closed(cfg):
 
 
 def test_substitution_in_arguments_is_not_escalated_once_a_rule_matches(cfg):
-    """KNOWN GAP, pinned so it is a decision rather than a surprise.
+    """KNOWN GAP — tracked as CB-5. Pinned so it is a decision, not a surprise.
 
     `ast_escalate` lists `command_substitution`, but the engine escalates only
     an UNMATCHED leaf — so any allow rule overrides it and the substitution,
@@ -415,8 +415,10 @@ def test_substitution_in_arguments_is_not_escalated_once_a_rule_matches(cfg):
     heredocs, whose bodies really are argument data; `$(…)` is code, and the
     two got the same treatment.
 
-    Closing it is a config-wide behaviour change, not a rule fix. This test
-    asserts today's behaviour so the change is visible when someone makes it.
+    Closing it is an engine change (escalate a MATCHED leaf too), not a rule
+    fix, and it needs `ast_escalate` split by data-vs-executes. Measured cost:
+    2.2% of rule-allows. This test asserts today's behaviour so the change is
+    visible when someone makes it — update it, don't delete it.
     """
     assert evaluate("ls $(rm -rf /x)", cfg).decision == "allow"
     assert evaluate("git status $(rm -rf /x)", cfg).decision == "allow"
