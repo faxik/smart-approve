@@ -14,6 +14,7 @@ Expectations:
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -310,3 +311,31 @@ def test_git_push_force_still_denied(cfg):
 
 def test_unknown_command_still_classifies(cfg):
     assert evaluate("somethingweird --flag", cfg).decision is None
+
+
+def test_no_rule_backtracks_catastrophically_on_a_long_leaf(cfg):
+    """A hook that stalls is a hook that prompts.
+
+    `scratchpad-rm` was written as `(?:/tmp/claude-\\d+/\\S+\\s*)+$`. The
+    possibly-empty `\\s*` makes the split points of one glued token ambiguous,
+    so matching backtracks exponentially: 868ms at 22 repeated segments and
+    past the hook's 5s budget shortly after — a single `rm` line was enough to
+    stall the hook into `hook_cancelled`, which surfaces as a permission
+    prompt. The rule now requires a non-empty separator between path items.
+
+    The whole ruleset is swept, not just that rule, because this is a property
+    of the config as a WHOLE — any future rule can reintroduce it.
+    """
+    adversarial = [
+        "rm -rf " + "/tmp/claude-1000/a" * 60 + " /etc/x",
+        "cp " + "aaaa " * 60 + "/tmp/claude-1000/x",
+        "env " + "A=1 " * 60 + "sudo rm -rf /",
+        "setsid " + "x " * 60,
+        "a" * 3000,
+    ]
+    for cmd in adversarial:
+        start = time.perf_counter()
+        for rule in cfg.rules:
+            rule.match.search(cmd)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 0.25, f"ruleset took {elapsed:.3f}s on {cmd[:60]!r}…"

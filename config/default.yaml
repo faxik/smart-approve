@@ -161,8 +161,16 @@ rules:
   # whole leaf back to the classifier. Relative-path forms after `cd` into a
   # scratchpad cannot be verified from the leaf text and stay with the
   # classifier (steered by the sandbox hint below).
+  #
+  # The path list is written as `item (\s+ item)*` rather than `(item \s*)+`.
+  # The latter is ambiguous — `\S+` and a possibly-empty `\s*` give one glued
+  # token exponentially many split points, and matching backtracks
+  # catastrophically: measured 0.3ms / 18ms / 257ms / 868ms at 10 / 16 / 20 /
+  # 22 repeated path segments, i.e. past the hook's 5s budget shortly after.
+  # A single `rm` line was enough to stall the hook into `hook_cancelled`.
+  # Requiring a NON-empty separator between items makes the split unique.
   - name: scratchpad-rm
-    match: '^(?!.*\.\.)rm\s+(?:-[a-zA-Z]+\s+)*(?:/tmp/claude-\d+/\S+\s*)+$'
+    match: '^(?!.*\.\.)rm\s+(?:-[a-zA-Z]+\s+)*/tmp/claude-\d+/\S+(?:\s+/tmp/claude-\d+/\S+)*\s*$'
     decision: allow
 
   - name: scratchpad-cp
