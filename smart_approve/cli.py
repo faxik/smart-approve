@@ -82,7 +82,16 @@ def _iter_entries(log_path: Path) -> Iterable[tuple[str, dict[str, Any] | None]]
 
 
 def _resolve_log_path(args: argparse.Namespace) -> Path:
-    return Path(args.log).expanduser() if args.log else load_config().log.path
+    if args.log:
+        return Path(args.log).expanduser()
+    # `explain` accepts --cwd/--config; honour them here too, or `--cwd <repo>
+    # --last` would resolve the log through the DEFAULT config while claiming
+    # to describe that repo — replaying an entry from an unrelated log. Other
+    # subcommands don't define these, hence getattr.
+    return load_config(
+        explicit=getattr(args, "config", None),
+        start_dir=getattr(args, "cwd", None) or os.getcwd(),
+    ).log.path
 
 
 def _atomic_write(path: Path, lines: list[str]) -> None:
@@ -306,12 +315,6 @@ def _add_stats_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_stats)
 
 
-_VERDICT_NOTE = {
-    "allow": "every leaf was resolved by a rule → allowed without calling the classifier",
-    "deny": "a leaf hit a deny rule; deny always wins over any number of allows",
-}
-
-
 def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> int:
     """Re-evaluate a command through a config as it stands NOW.
 
@@ -354,18 +357,18 @@ def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> in
     out("")
     if result.decision == "deny":
         out(f"VERDICT: deny — {result.deny_reason}")
-        out(f"         {_VERDICT_NOTE['deny']}")
+        out("         a leaf hit a deny rule; deny always wins over any number of allows")
     elif result.decision == "allow":
         out("VERDICT: allow")
-        out(f"         {_VERDICT_NOTE['allow']}")
+        out("         every leaf was resolved by a rule → allowed without calling the classifier")
     else:
         unmatched = [
             (i, lt) for i, lt in enumerate(result.leaves, 1) if lt.decision is None
         ]
         out("VERDICT: classifier decides (this is what makes a call slow, and what can end in a prompt)")
         out(f"         {len(unmatched)} leaf/leaves had no rule:")
-        for i, lt in enumerate(unmatched, 1):
-            out(f"           [{lt[0]}] {_truncate(lt[1].final, args.width)}")
+        for idx, leaf in unmatched:
+            out(f"           [{idx}] {_truncate(leaf.final, args.width)}")
         out("         add a rule matching those leaves to resolve this without the classifier.")
         out("         NOTE: a classifier `allow` still runs the command — a prompt you saw for an")
         out("         allowed command came from another layer (settings.json permissions, or the")

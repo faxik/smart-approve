@@ -253,12 +253,6 @@ def test_smart_approve_stats_is_rule_allowed(cfg):
     assert evaluate("smart-approve stats --since 2026-08-19 --top 20", cfg).decision == "allow"
 
 
-def test_smart_approve_module_form_is_rule_allowed(cfg):
-    r = evaluate("python3 -m smart_approve stats --top 5", cfg)
-    assert r.decision == "allow"
-    assert r.leaves[0].matched_rule == "smart-approve-read-module"
-
-
 def test_smart_approve_prune_still_classifies(cfg):
     # prune REWRITES the log — it must not ride in on the read-only rule.
     assert evaluate("smart-approve prune --decision deny --before 2026-08-19", cfg).decision is None
@@ -311,6 +305,64 @@ def test_git_push_force_still_denied(cfg):
 
 def test_unknown_command_still_classifies(cfg):
     assert evaluate("somethingweird --flag", cfg).decision is None
+
+
+def test_rewrite_prefixes_do_not_relocate_the_executable(cfg):
+    """A rewrite that picks the wrong word as the executable launders
+    everything behind it.
+
+    Bash reads `X=foo\\ ls sudo …` as ONE assignment with value `foo ls`, then
+    runs `sudo`. A `\\S*` value class split at the escaped space and handed
+    `ls sudo rm -rf …` to the next rewrite round, where `fs-read` matched the
+    leading `ls` — measured as ALLOW for all three prefix forms.
+    """
+    for cmd in (
+        r"X=foo\ ls sudo rm -rf /home/u/project",
+        r"env X=foo\ ls sudo rm -rf /home/u/project",
+        r"setsid env X=foo\ ls sudo rm -rf /home/u/project",
+        'X="foo ls" sudo rm -rf /home/u/project',
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+    # The plain forms the rewrite exists for keep working.
+    assert evaluate("FOO=1 ls", cfg).decision == "allow"
+    assert evaluate("env FOO=1 BAR=2 ls -la", cfg).decision == "allow"
+    assert evaluate("setsid env FOO=1 ls", cfg).decision == "allow"
+
+
+def test_scratchpad_containment_is_not_defeated_by_shell_expansion(cfg):
+    """`..` containment is LEXICAL, so a path token must not be able to carry
+    text the regex never saw — escaped, substituted, or expanded.
+
+    All of these were measured as ALLOW while path tokens were `\\S+`.
+    """
+    for cmd in (
+        r"rm -rf /tmp/claude-1000/\.\./\.\./home/u/project",
+        r"cp payload /tmp/claude-1000/\.\./\.\./home/u/.ssh/authorized_keys",
+        r"bash /tmp/claude-1000/\.\./\.\./home/u/evil.sh",
+        r"python3 /tmp/claude-1000/\.\./\.\./home/u/evil.py",
+        "rm -rf /tmp/claude-1000/$(/home/u/evil)",
+        "ESC=../..; rm -rf /tmp/claude-1000/$ESC/home/u/project",
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+    # The scaffold/teardown idiom these rules exist for is unaffected.
+    for cmd in (
+        "rm -rf /tmp/claude-1000/sess/scratch",
+        "rm -rf /tmp/claude-1000/a /tmp/claude-1000/b",
+        "cp /home/u/x.py /tmp/claude-1000/sess/x.py",
+        "bash /tmp/claude-1000/sess/repro.sh",
+        "python3 /tmp/claude-1000/sess/analyze.py",
+    ):
+        assert evaluate(cmd, cfg).decision == "allow", cmd
+
+
+def test_smart_approve_module_form_is_not_allowed(cfg):
+    """`-m smart_approve` resolves the package from the CWD, so this allowed
+    whatever `smart_approve/` directory the caller happened to be standing in.
+    The executable form stays — see the note in default.yaml."""
+    assert evaluate("python3 -m smart_approve stats", cfg).decision != "allow"
+    assert evaluate("smart-approve stats", cfg).decision == "allow"
 
 
 def test_no_rule_backtracks_catastrophically_on_a_long_leaf(cfg):

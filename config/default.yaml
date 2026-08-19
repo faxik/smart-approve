@@ -36,8 +36,18 @@ rules:
 
   # Strip one or more `VAR=value ` env-var assignment prefixes in a single
   # rewrite so multi-var inputs don't burn through the depth-3 rewrite cap.
+  #
+  # The value class excludes \ ' " and whitespace because this rewrite decides
+  # WHICH WORD IS THE EXECUTABLE, and a quoted or escaped space is a space to
+  # the regex but not to bash. With `\S*` the following was measured as ALLOW:
+  #   X=foo\ ls sudo rm -rf /home/u/project
+  # bash reads one assignment `X='foo ls'` and runs `sudo`; the rewrite split
+  # at the escaped space and handed `ls sudo rm -rf …` to the next round,
+  # where `fs-read` matched the leading `ls`. A rewrite that can pick the wrong
+  # executable launders every deny rule behind it, so anything quoted or
+  # escaped must fail to match here and fall to the classifier instead.
   - name: env-var-prefix
-    match: '^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+(.*)$'
+    match: '^(?:[A-Z_][A-Z0-9_]*=[^\s\\''"]*\s+)+(.*)$'
     decision: rewrite
     rewrite_to: '\1'
 
@@ -48,7 +58,7 @@ rules:
   # from a classifier call to an `fs-read` allow. Widen both together or
   # neither.
   - name: env-cmd-prefix
-    match: '^env\s+(?:[A-Z_][A-Z0-9_]*=\S*\s+)+(.*)$'
+    match: '^env\s+(?:[A-Z_][A-Z0-9_]*=[^\s\\''"]*\s+)+(.*)$'
     decision: rewrite
     rewrite_to: '\1'
 
@@ -169,22 +179,33 @@ rules:
   # 22 repeated path segments, i.e. past the hook's 5s budget shortly after.
   # A single `rm` line was enough to stall the hook into `hook_cancelled`.
   # Requiring a NON-empty separator between items makes the split unique.
+  #
+  # `..` containment is a LEXICAL check, so a path token must not contain any
+  # character that lets the shell produce text the regex never saw. `\S`
+  # allowed exactly that, and all three forms were measured as ALLOW:
+  #   rm -rf /tmp/claude-1000/\.\./\.\./home/u/proj   escaped dots: no literal
+  #                                                   `..` for the guard to see
+  #   rm -rf /tmp/claude-1000/$(/home/u/evil)         substitution runs first
+  #   ESC=../.. ; rm -rf /tmp/claude-1000/$ESC/…      expansion supplies the `..`
+  # so path tokens now exclude \ $ ` — anything quoted, escaped or expanded
+  # fails to match and falls back to the classifier, which is the fail-closed
+  # direction. Keep this class in sync across the four scratchpad rules.
   - name: scratchpad-rm
-    match: '^(?!.*\.\.)rm\s+(?:-[a-zA-Z]+\s+)*/tmp/claude-\d+/\S+(?:\s+/tmp/claude-\d+/\S+)*\s*$'
+    match: '^(?!.*\.\.)rm\s+(?:-[a-zA-Z]+\s+)*/tmp/claude-\d+/[^\s\\$`]+(?:\s+/tmp/claude-\d+/[^\s\\$`]+)*\s*$'
     decision: allow
 
   - name: scratchpad-cp
-    match: '^(?!.*\.\.)cp\s+(?:-[a-zA-Z]+\s+)*(?:\S+\s+)+/tmp/claude-\d+/\S+$'
+    match: '^(?!.*\.\.)cp\s+(?:-[a-zA-Z]+\s+)*(?:[^\s\\$`]+\s+)+/tmp/claude-\d+/[^\s\\$`]+$'
     decision: allow
 
   - name: scratchpad-bash
-    match: '^(?!.*\.\.)bash\s+(?:-[ex]+\s+)*/tmp/claude-\d+/\S+(\s|$)'
+    match: '^(?!.*\.\.)bash\s+(?:-[ex]+\s+)*/tmp/claude-\d+/[^\s\\$`]+(\s|$)'
     decision: allow
 
   # Running a python script staged in a scratchpad — same trust level as
   # scratchpad-bash (the analysis/repro-script idiom).
   - name: scratchpad-python
-    match: '^(?!.*\.\.)(\S*/)?python3?\s+/tmp/claude-\d+/\S+(\s|$)'
+    match: '^(?!.*\.\.)(\S*/)?python3?\s+/tmp/claude-\d+/[^\s\\$`]+(\s|$)'
     decision: allow
 
   # User-authored Claude Code skill helper scripts (~/.claude/skills/**) —
@@ -299,9 +320,20 @@ rules:
     match: '^(\S*/)?smart-approve\s+(explain|stats)(\s|$)'
     decision: allow
 
-  - name: smart-approve-read-module
-    match: '^(\S*/)?python3?\s+-m\s+smart_approve\s+(explain|stats)(\s|$)'
-    decision: allow
+  # `-m smart_approve` resolves the package from the CURRENT DIRECTORY first,
+  # so in any checkout carrying a `smart_approve/` directory this rule ran that
+  # code, not this tool. That is a strictly worse vector than the executable
+  # form below it: no planted binary is needed, only a directory name. The
+  # module form is not part of the documented CLI idiom (the hook's own entry
+  # point is `bin/decide`, not a Bash command), so it is dropped rather than
+  # patched — an interpreter flag cannot be made to prove provenance.
+  #
+  # RESIDUAL, deliberately not fixed here: the executable rule above still
+  # trusts a NAME, so a planted `./smart-approve` is auto-allowed. That is the
+  # same tradeoff every path-tolerant rule in this file already makes
+  # (`pytest`, `mypy`, `ruff`, `python -m pytest`), and singling this one out
+  # would be inconsistent rather than safer. Closing it needs a different
+  # mechanism — verifying the resolved binary — not a tighter regex.
 
   - name: chmod-plus-x
     match: '^chmod\s+\+x(\s|$)'
