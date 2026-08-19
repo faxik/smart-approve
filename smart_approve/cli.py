@@ -306,6 +306,162 @@ def _add_stats_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=cmd_stats)
 
 
+_VERDICT_NOTE = {
+    "allow": "every leaf was resolved by a rule → allowed without calling the classifier",
+    "deny": "a leaf hit a deny rule; deny always wins over any number of allows",
+}
+
+
+def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> int:
+    """Re-evaluate a command through a config as it stands NOW.
+
+    The classifier is never invoked: this reports what the RULE layer does,
+    which is exactly the part a config edit can change. What the classifier
+    would answer for an unmatched leaf is not predictable offline, so the
+    report says "would be asked", never guesses a verdict.
+    """
+    from .engine import evaluate
+
+    config = load_config(
+        explicit=args.config,
+        start_dir=args.cwd or os.getcwd(),
+    )
+    command = args.command
+    result = evaluate(command, config)
+
+    out(f"command: {_truncate(command, args.width)}")
+    out(f"config:  {', '.join(str(p) for p in config.sources)}")
+    if result.parsed.parse_error:
+        out(f"parse:   FAILED — {result.parsed.parse_error} (defaults.on_parse_error={config.defaults.on_parse_error})")
+    if result.parsed.exotic:
+        escalating = sorted(set(result.parsed.exotic) & config.ast_escalate)
+        note = "detected" if not escalating else f"detected, escalating: {', '.join(escalating)}"
+        out(f"exotic:  {', '.join(result.parsed.exotic)} ({note})")
+        out("         note: exotic constructs do NOT bypass rules — rules are tried on each leaf's first line")
+    out("")
+    out(f"leaves ({len(result.leaves)}):")
+    for i, lt in enumerate(result.leaves, 1):
+        verdict = lt.decision or "no rule matched"
+        rule = f"rule={lt.matched_rule}" if lt.matched_rule else "rule=—"
+        out(f"  [{i}] {verdict:<15} {rule}")
+        out(f"      {_truncate(lt.original, args.width)}")
+        if lt.rewrites:
+            for r in lt.rewrites:
+                out(f"      ↳ rewritten by {r} → {_truncate(lt.final, args.width)}")
+        if lt.reason:
+            out(f"      reason: {lt.reason}")
+
+    out("")
+    if result.decision == "deny":
+        out(f"VERDICT: deny — {result.deny_reason}")
+        out(f"         {_VERDICT_NOTE['deny']}")
+    elif result.decision == "allow":
+        out("VERDICT: allow")
+        out(f"         {_VERDICT_NOTE['allow']}")
+    else:
+        unmatched = [
+            (i, lt) for i, lt in enumerate(result.leaves, 1) if lt.decision is None
+        ]
+        out("VERDICT: classifier decides (this is what makes a call slow, and what can end in a prompt)")
+        out(f"         {len(unmatched)} leaf/leaves had no rule:")
+        for i, lt in enumerate(unmatched, 1):
+            out(f"           [{lt[0]}] {_truncate(lt[1].final, args.width)}")
+        out("         add a rule matching those leaves to resolve this without the classifier.")
+        out("         NOTE: a classifier `allow` still runs the command — a prompt you saw for an")
+        out("         allowed command came from another layer (settings.json permissions, or the")
+        out("         host's own permission classifier), not from this hook.")
+    return 0
+
+
+def _explain_from_log(args: argparse.Namespace, out: Callable[[str], None]) -> int:
+    """Replay the RECORDED trace of a past decision.
+
+    Unlike the offline mode this knows the classifier's actual verdict and
+    reason — but it reports the config as it was AT THE TIME, so a trace
+    predating a rule change does not describe today's behavior.
+    """
+    log_path = _resolve_log_path(args)
+    if not log_path.exists():
+        out(f"no log at {log_path}")
+        return 1
+
+    pat = re.compile(args.grep) if args.grep else None
+    chosen: dict[str, Any] | None = None
+    for _raw, entry in _iter_entries(log_path):
+        if entry is None:
+            continue
+        if pat and not pat.search(entry.get("command") or ""):
+            continue
+        chosen = entry  # keep the last match
+    if chosen is None:
+        out(f"no log entry matching {args.grep!r}" if pat else "no log entries")
+        return 1
+
+    out(f"ts:      {chosen.get('ts')}   session={str(chosen.get('session_id'))[:8]}   cwd={chosen.get('cwd')}")
+    out(f"command: {_truncate(chosen.get('command') or '', args.width)}")
+    out(f"latency: {chosen.get('latency_ms')} ms")
+    if chosen.get("exotic"):
+        out(f"exotic:  {', '.join(chosen['exotic'])}   escalation_flag={chosen.get('exotic_escalation')}")
+    if chosen.get("parse_error"):
+        out(f"parse:   FAILED — {chosen['parse_error']}")
+    out("")
+    leaves = chosen.get("leaves") or []
+    out(f"leaves ({len(leaves)}):")
+    for i, lf in enumerate(leaves, 1):
+        verdict = lf.get("decision") or "no rule matched"
+        rule = f"rule={lf.get('rule')}" if lf.get("rule") else "rule=—"
+        out(f"  [{i}] {verdict:<15} {rule}")
+        out(f"      {_truncate(lf.get('final') or lf.get('original') or '', args.width)}")
+        if lf.get("reason"):
+            out(f"      reason: {lf['reason']}")
+    out("")
+    cls = chosen.get("classifier")
+    if chosen.get("classifier_used") and cls:
+        err = f"   error={cls.get('error')}" if cls.get("error") else ""
+        out(f"classifier was called → {cls.get('decision')}{err}")
+        out(f"  reason: {cls.get('reason')}")
+    else:
+        out("classifier was NOT called — rules resolved every leaf")
+    out("")
+    out(f"VERDICT (as recorded): {chosen.get('final_decision')}")
+    out("  this is what the config in force AT THAT TIME decided; re-run without --last/--grep")
+    out("  to see what the current config does with the same command.")
+    return 0
+
+
+def cmd_explain(args: argparse.Namespace, out: Callable[[str], None] = print) -> int:
+    from_log = args.last or args.grep
+    if from_log and args.command:
+        out("explain: pass a command OR --last/--grep, not both.")
+        return 2
+    if not from_log and not args.command:
+        out("explain: give a command to evaluate, or --last / --grep PATTERN to read one from the log.")
+        return 2
+    return _explain_from_log(args, out) if from_log else _explain_offline(args, out)
+
+
+def _add_explain_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "explain",
+        help="Show why a command got its verdict, leaf by leaf.",
+        description=(
+            "Explain a permission verdict. With a COMMAND, re-evaluates it through "
+            "the config as it stands now (rule layer only — the classifier is never "
+            "called) and names any leaf that has no rule, which is what sends a call "
+            "to the classifier. With --last/--grep, replays the recorded trace of a "
+            "past decision from the log, including the classifier's actual verdict."
+        ),
+    )
+    p.add_argument("command", nargs="?", help="Command to evaluate against the current config.")
+    p.add_argument("--config", help="Evaluate against THIS config file only (no layering) — e.g. a staged candidate.")
+    p.add_argument("--cwd", help="Directory used to resolve the project config layer (default: cwd).")
+    p.add_argument("--log", help="Log file path (default: resolved from config).")
+    p.add_argument("--last", action="store_true", help="Explain the most recent logged decision.")
+    p.add_argument("--grep", help="Regex — explain the most recent logged decision whose command matches.")
+    p.add_argument("--width", type=int, default=160, help="Command-display width (default: 160).")
+    p.set_defaults(func=cmd_explain)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smart-approve",
@@ -314,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="cmd", required=True)
     _add_prune_parser(sub)
     _add_stats_parser(sub)
+    _add_explain_parser(sub)
     return parser
 
 

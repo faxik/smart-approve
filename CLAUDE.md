@@ -20,7 +20,12 @@ smart-approve stats                            # decision-log summary + rule-pro
 smart-approve stats --since 2026-04-14 --top 15
 smart-approve prune --command-matches '^source ' --dry-run
 smart-approve prune --session-id abc123 --command-matches '^git push'
+smart-approve explain 'cd /x && sed -i s/a/b/ f.py'   # why THIS command gets its verdict (offline)
+smart-approve explain --grep 'sed -i.*adapter'        # replay a recorded decision from the log
+smart-approve explain --config /tmp/staged.yaml 'cmd' # what a candidate config would do
 ```
+
+Note the CLI is not on `PATH` — it lives at `<repo>/.venv/bin/smart-approve`.
 
 There is no lint/typecheck config in `pyproject.toml` — only pytest.
 
@@ -90,6 +95,8 @@ Every invocation writes one JSONL line to the path in `config.log.path` (default
 ```bash
 smart-approve stats --top 20
 ```
+
+**`explain` is the per-command counterpart to `stats`' aggregate view**, and it answers a question the raw log makes tedious: *which leaf had no rule*. Two modes that must not be confused — a COMMAND argument re-evaluates through the config as it stands NOW (rule layer only; the classifier is never called, so an unmatched leaf reports "would be asked" rather than a guessed verdict), while `--last`/`--grep` replays a RECORDED trace, which knows the classifier's real verdict but describes the config *as it was at that time*. It also states the boundary users get wrong: a classifier `allow` still runs the command, so a prompt seen for an allowed command came from `settings.json` permissions or the host's own permission classifier — not from this hook.
 
 `stats` groups classifier-resolved commands by verdict. The `PROMOTE-CANDIDATES: classifier-allowed` section is the ranked list of commands that the classifier keeps saying "allow" to — those are the ones to encode as explicit rules in `config/default.yaml` (package-wide) or a project-local `.smart-approve.yaml`. `REVIEW: classifier-ask` surfaces commands the classifier wasn't confident about; `NOTE: classifier-deny` surfaces classifier denies. Then `smart-approve prune …` to remove entries you've digested.
 
