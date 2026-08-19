@@ -86,7 +86,15 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
     if not _TS_AVAILABLE:
         return None
 
-    tree = _get_ts_parser().parse(cmd.encode())
+    # tree-sitter reports offsets into the UTF-8 BYTES it was handed, so leaf
+    # text must be sliced out of that same buffer. Slicing the str with byte
+    # offsets shifts every leaf after the first non-ASCII character:
+    # `echo "привет" && sudo rm -rf /x` yielded 'm -rf /x', which no deny rule
+    # matches — non-ASCII text laundered deny rules exactly like the trailing
+    # redirect did. Same family as the byte-vs-character range confusion in
+    # `_quoted_ranges`.
+    data = cmd.encode()
+    tree = _get_ts_parser().parse(data)
     root = tree.root_node
     if root.has_error:
         return None  # fall through to bashlex
@@ -123,7 +131,7 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
             if ntype == "command" and node.parent and node.parent.type == "redirected_statement":
                 pass  # parent handles this
             else:
-                leaves.append(cmd[node.start_byte : node.end_byte])
+                leaves.append(data[node.start_byte : node.end_byte].decode("utf-8", "replace"))
             # Descend to detect exotic constructs inside.
             for child in node.children:
                 walk(child, True)
