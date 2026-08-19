@@ -65,6 +65,11 @@ class ClassifierConfig:
     enabled: bool = True
     model: str = "claude-haiku-4-5-20251001"
     timeout_s: float = 3.0
+    # Total wall-clock the classifier may spend across ALL attempts. Must stay
+    # under the PreToolUse hook's own timeout (5s as wired in settings.json) —
+    # overrunning it cancels the whole hook, which turns an auto-allow into a
+    # user prompt. `classify` derives the per-attempt timeout from this.
+    budget_s: float = 4.5
     system_prompt_file: Path | None = None
     # API key resolved from config (highest precedence — lets the hook use a
     # dedicated key so you can see its billing in isolation).
@@ -266,6 +271,7 @@ def load(explicit: str | Path | None = None, start_dir: str | Path | None = None
         enabled=bool(merged_classifier.get("enabled", cls_base.enabled)),
         model=merged_classifier.get("model", cls_base.model),
         timeout_s=float(merged_classifier.get("timeout_s", cls_base.timeout_s)),
+        budget_s=float(merged_classifier.get("budget_s", cls_base.budget_s)),
         system_prompt_file=spf,
         api_key=merged_classifier.get("api_key"),
         api_key_env=merged_classifier.get("api_key_env"),

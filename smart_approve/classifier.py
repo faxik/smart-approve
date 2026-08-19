@@ -87,6 +87,12 @@ def _resolve_auth(cfg: ClassifierConfig) -> tuple[dict[str, str], str | None]:
     return {}, None
 
 
+# One retry, and the SDK's initial backoff between attempts. Both feed the
+# per-attempt timeout derived in `classify` from `ClassifierConfig.budget_s`.
+_MAX_RETRIES = 1
+_RETRY_BACKOFF_S = 0.5
+
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are a permission classifier for shell commands in a developer's Claude Code "
     "session. Decide whether a command is safe enough to auto-allow.\n\n"
@@ -142,12 +148,21 @@ def classify(command: str, cfg: ClassifierConfig, extra_context: str | None = No
 
     user_content = command if extra_context is None else f"{command}\n\n[context]\n{extra_context}"
     try:
-        # max_retries=1: the SDK default of 2 retries (3 attempts) can exceed
-        # the PreToolUse hook's wall-clock budget, cancelling the WHOLE hook —
-        # which turns an auto-allow into a user prompt (observed 2026-08-17 as
-        # `hook_cancelled timeout 5000ms`). One retry keeps transient-error
-        # resilience while bounding the worst case under the hook timeout.
-        client = anthropic.Anthropic(timeout=cfg.timeout_s, max_retries=1, **auth_kwargs)
+        # The SDK default of 2 retries (3 attempts) can exceed the PreToolUse
+        # hook's wall-clock budget and cancel the WHOLE hook, which turns an
+        # auto-allow into a user prompt (observed 2026-08-17 as
+        # `hook_cancelled timeout 5000ms`).
+        #
+        # One retry keeps transient-error resilience, but retries only bound
+        # the worst case if the per-attempt timeout is DERIVED from the total
+        # budget. `timeout_s: 3.0` with one retry is ~6.5s worst case — still
+        # over the 5s hook timeout, i.e. the failure this guard was added for
+        # could still happen. Deriving it here ties the two numbers together
+        # so they cannot drift apart again; `timeout_s` stays the ceiling for
+        # a single attempt.
+        attempts = _MAX_RETRIES + 1
+        per_attempt = min(cfg.timeout_s, (cfg.budget_s - _RETRY_BACKOFF_S * _MAX_RETRIES) / attempts)
+        client = anthropic.Anthropic(timeout=per_attempt, max_retries=_MAX_RETRIES, **auth_kwargs)
         resp = client.messages.create(
             model=cfg.model,
             max_tokens=200,

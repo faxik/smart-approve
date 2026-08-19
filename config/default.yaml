@@ -346,6 +346,9 @@ classifier:
   enabled: true
   model: claude-haiku-4-5-20251001
   timeout_s: 3.0
+  # Total across all attempts, must stay under the hook's own 5s timeout —
+  # the per-attempt timeout is derived from this, so retries can't overrun it.
+  budget_s: 4.5
   system_prompt_file: prompts/classify.md
   # Auth resolution — first hit wins:
   #   1. oauth_token_env — read OAuth bearer from the named env var
