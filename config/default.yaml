@@ -27,10 +27,24 @@ rules:
     decision: rewrite
     rewrite_to: '\1'
 
+  # Strip `setsid [-f] ...` wrapper (detached worktree-finish runs). Note the
+  # rewrite depth cap is 3: setsid → nohup → final rule still fits.
+  - name: setsid-prefix
+    match: '^setsid\s+(?:-\S+\s+)*(.*)$'
+    decision: rewrite
+    rewrite_to: '\1'
+
   # Strip one or more `VAR=value ` env-var assignment prefixes in a single
   # rewrite so multi-var inputs don't burn through the depth-3 rewrite cap.
   - name: env-var-prefix
     match: '^(?:[A-Z_][A-Z0-9_]*=\S*\s+)+(.*)$'
+    decision: rewrite
+    rewrite_to: '\1'
+
+  # Strip an `env VAR=val …` command prefix the same way (the `env` binary
+  # form of the assignment prefix above).
+  - name: env-cmd-prefix
+    match: '^env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+(.*)$'
     decision: rewrite
     rewrite_to: '\1'
 
@@ -81,6 +95,16 @@ rules:
     match: '^env$'
     decision: allow
 
+  # Shell no-op/probe builtins. `true` alone was classifier-asked 28 times in
+  # one week of the decision log.
+  - name: shell-noop
+    match: '^(true|false|:)(\s|$)'
+    decision: allow
+
+  - name: command-v
+    match: '^command\s+-v(\s|$)'
+    decision: allow
+
   # Git read
   - name: git-read
     match: '^git\s+(status|log|diff|show|branch|remote|blame|ls-files|ls-tree|rev-parse|worktree|describe|shortlog|reflog|tag|cat-file|merge-base|config\s+--get|stash\s+list)(\s|$)'
@@ -90,8 +114,12 @@ rules:
   # `merge` included — merge --no-ff/--ff-only is routine; dangerous cases
   # (--abort, conflict resolution) remain safe because the workdir is already
   # version-controlled.
+  # `clone` and `config` added 2026-08-19: sandbox scaffolds (git init +
+  # git config user.email + git clone of a local fixture repo) were the
+  # second-largest ask source in the 2026-08-17 bugfix-loop stall analysis,
+  # and the user's own settings already allow `git:*` wholesale.
   - name: git-write-safe
-    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached|init|merge|cherry-pick|revert)(\s|$)'
+    match: '^git\s+(add|commit|stash|fetch|pull\s+--ff-only|checkout|switch|restore|mv|rm\s+--cached|init|merge|cherry-pick|revert|clone|config)(\s|$)'
     decision: allow
 
   # Git destructive — deny
@@ -109,6 +137,61 @@ rules:
     match: '^git\s+clean\s+-[a-zA-Z]*f'
     decision: deny
     reason: "clean -f deletes untracked files — ask explicitly"
+
+  # uv — the project runner. `uv run` executes project code at the same trust
+  # level as pytest (allowed below); pip/venv/sync/lock manage the project env.
+  # This was the single biggest classifier-traffic source measured on
+  # 2026-08-17: 368 classifier calls, ~1.6s median each, mostly `uv run` shapes.
+  - name: uv-run
+    match: '^uv\s+run(\s|$)'
+    decision: allow
+
+  - name: uv-env
+    match: '^uv\s+(pip|venv|sync|lock)(\s|$)'
+    decision: allow
+
+  # Claude Code session scratchpads (/tmp/claude-<uid>/…) are disposable repro
+  # sandboxes; the bugfix-loop idiom scaffolds and tears down throwaway repos
+  # there constantly. rm/cp/bash are allowed only when EVERY path argument is
+  # inside a scratchpad; one argument outside (or any `..` traversal) drops the
+  # whole leaf back to the classifier. Relative-path forms after `cd` into a
+  # scratchpad cannot be verified from the leaf text and stay with the
+  # classifier (steered by the sandbox hint below).
+  - name: scratchpad-rm
+    match: '^(?!.*\.\.)rm\s+(?:-[a-zA-Z]+\s+)*(?:/tmp/claude-\d+/\S+\s*)+$'
+    decision: allow
+
+  - name: scratchpad-cp
+    match: '^(?!.*\.\.)cp\s+(?:-[a-zA-Z]+\s+)*(?:\S+\s+)+/tmp/claude-\d+/\S+$'
+    decision: allow
+
+  - name: scratchpad-bash
+    match: '^(?!.*\.\.)bash\s+(?:-[ex]+\s+)*/tmp/claude-\d+/\S+(\s|$)'
+    decision: allow
+
+  # Running a python script staged in a scratchpad — same trust level as
+  # scratchpad-bash (the analysis/repro-script idiom).
+  - name: scratchpad-python
+    match: '^(?!.*\.\.)(\S*/)?python3?\s+/tmp/claude-\d+/\S+(\s|$)'
+    decision: allow
+
+  # User-authored Claude Code skill helper scripts (~/.claude/skills/**) —
+  # e.g. the codex-code-review start/resume wrappers.
+  - name: skill-scripts
+    match: '^(?!.*\.\.)(bash\s+)?\S*/\.claude/skills/\S+\.(sh|py)(\s|$)'
+    decision: allow
+
+  # Cross-model review runs: codex CLI pinned to its read-only sandbox. The
+  # non-read-only forms stay with the classifier.
+  - name: codex-exec-readonly
+    match: '^codex\s+exec\s(?=.*--sandbox\s+read-only)'
+    decision: allow
+
+  # `kill -0 PID` is a pure existence probe — sends no signal. Real signals
+  # stay with the classifier.
+  - name: kill-probe
+    match: '^kill\s+-0\s+\d+(\s+\d+)*$'
+    decision: allow
 
   # Test / lint / typecheck runners. `(\S*/)?` allows bare tool,
   # .venv-local paths, or absolute paths like /home/u/proj/.venv/bin/python.
@@ -218,6 +301,12 @@ hints:
     text: "sed, awk, head, tail with pipes for text inspection — read-only output processing"
   - decision: allow
     text: "find with xargs grep for code search — read-only pattern matching"
+  - decision: allow
+    text: "compound sandbox scaffolds that cd into /tmp/claude-<uid>/… and then mkdir/cp/rm/chmod/git-init/run scripts THERE — session scratchpads are disposable repro sandboxes; relative paths after the cd are inside it"
+  - decision: allow
+    text: "running a repo's own CLI or helper scripts inside its checkout or worktree — python -m <pkg>.cli, .venv/bin/python -m <pkg>, tools/*.sh"
+  - decision: allow
+    text: "sourcing a repo's tools/_guards.sh (or similar test-harness library) to probe a guard function read-only"
 
 ast_escalate:
   - command_substitution

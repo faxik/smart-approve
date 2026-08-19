@@ -44,7 +44,7 @@ Key invariants — do not break:
 
 - **Silent failure.** Any uncaught exception or missing `.venv/bin/python` must result in `exit 0` with no stdout, so Claude Code falls through to its normal permission prompt. See `bin/decide` and the top-level try/except in `__main__.main`.
 - **Deny always wins** at leaf aggregation. An allow on one leaf cannot override a deny on another.
-- **Exotic AST nodes bypass rules.** `$(...)`, `<(...)`, heredocs, backticks, `eval`, `source`/`.` short-circuit to the classifier — regex cannot reason about arbitrary substitution, and we do not try. See `config.ast_escalate` and `engine.evaluate`.
+- **Exotic AST nodes no longer bypass rules.** `$(...)`, `<(...)`, heredocs, backticks, `eval`, `source`/`.` are detected (`config.ast_escalate`) and logged as `exotic_escalation`, but rules are tried first on each leaf's FIRST LINE (heredoc bodies are argument content, not command structure); only an unmatched leaf falls to the classifier. See `engine.evaluate` — an earlier version of this bullet claimed a short-circuit that the engine had already dropped.
 - **Rewrites are capped** at `_REWRITE_MAX_DEPTH = 3` (`engine.py`). Exceeding the cap falls through to `ask`, not infinite loop.
 - **Config layers merge, don't replace.** `rules` prepend (project > global > default, earlier wins at match time). `ast_escalate` is a set union. `disable_rules` drops named rules from the merged set. Scalar/dict fields shallow-merge. See `config.py`.
 

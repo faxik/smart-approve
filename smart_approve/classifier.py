@@ -142,7 +142,12 @@ def classify(command: str, cfg: ClassifierConfig, extra_context: str | None = No
 
     user_content = command if extra_context is None else f"{command}\n\n[context]\n{extra_context}"
     try:
-        client = anthropic.Anthropic(timeout=cfg.timeout_s, **auth_kwargs)
+        # max_retries=1: the SDK default of 2 retries (3 attempts) can exceed
+        # the PreToolUse hook's wall-clock budget, cancelling the WHOLE hook —
+        # which turns an auto-allow into a user prompt (observed 2026-08-17 as
+        # `hook_cancelled timeout 5000ms`). One retry keeps transient-error
+        # resilience while bounding the worst case under the hook timeout.
+        client = anthropic.Anthropic(timeout=cfg.timeout_s, max_retries=1, **auth_kwargs)
         resp = client.messages.create(
             model=cfg.model,
             max_tokens=200,
