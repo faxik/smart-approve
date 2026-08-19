@@ -51,6 +51,26 @@ _TS_EXOTIC_MAP = {
 
 _TS_SUBSTITUTION_TYPES = frozenset({"command_substitution", "process_substitution"})
 
+# Node types that hold MORE THAN ONE execution unit. A `redirected_statement`
+# wrapping one of these must be descended into rather than emitted as a single
+# leaf — see the comment at the descent in `_ts_parse`.
+_TS_COMPOUND_TYPES = frozenset(
+    {
+        "list",
+        "pipeline",
+        "subshell",
+        "compound_statement",
+        "redirected_statement",
+        "if_statement",
+        "while_statement",
+        "until_statement",
+        "for_statement",
+        "c_style_for_statement",
+        "case_statement",
+        "function_definition",
+    }
+)
+
 _ts_parser: _TSParser | None = None
 
 
@@ -83,6 +103,21 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
 
         # Extract top-level execution units as leaves.
         if not in_sub and ntype in ("command", "redirected_statement"):
+            # A redirect can wrap a COMPOUND, not just a simple command:
+            # tree-sitter-bash parses `cd /tmp && sudo rm -rf /x 2>&1` as one
+            # redirected_statement over the whole `&&` list. Emitting that as a
+            # single leaf hid every command after the first behind the first
+            # one's rule, so a trailing `2>&1` laundered ANY deny rule
+            # (measured: `cd /tmp && sudo rm -rf /x 2>&1` → allow via `cd`).
+            # Descend at the SAME level instead, so the inner commands become
+            # leaves. The bashlex fallback never had this bug and is the
+            # reference; tests/test_parser.py pins the two against each other.
+            if ntype == "redirected_statement" and any(
+                child.type in _TS_COMPOUND_TYPES for child in node.children
+            ):
+                for child in node.children:
+                    walk(child, in_sub)
+                return
             # Skip command nodes whose parent is redirected_statement —
             # the parent captures the full text including redirections.
             if ntype == "command" and node.parent and node.parent.type == "redirected_statement":

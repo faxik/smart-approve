@@ -208,7 +208,67 @@ def test_codex_exec_writable_sandbox_still_classifies(cfg):
     assert evaluate("codex exec 'p'", cfg).decision is None
 
 
+# --- smart-approve's own read-only CLI
+#
+# Added because giving the operator `explain` created new friction: the
+# command they were told to run to diagnose a prompt was itself asked
+# (measured: 1448ms classifier round-trip, verdict `ask`). `explain` and
+# `stats` only READ the decision log; `prune` REWRITES it and must keep
+# needing a decision.
+
+
+def test_smart_approve_explain_is_rule_allowed(cfg):
+    r = evaluate("/home/u/w/smart-approve/.venv/bin/smart-approve explain 'cd /x && ls'", cfg)
+    assert r.decision == "allow"
+    assert r.leaves[0].matched_rule == "smart-approve-read"
+
+
+def test_smart_approve_stats_is_rule_allowed(cfg):
+    assert evaluate("smart-approve stats --since 2026-08-19 --top 20", cfg).decision == "allow"
+
+
+def test_smart_approve_module_form_is_rule_allowed(cfg):
+    r = evaluate("python3 -m smart_approve stats --top 5", cfg)
+    assert r.decision == "allow"
+    assert r.leaves[0].matched_rule == "smart-approve-read-module"
+
+
+def test_smart_approve_prune_still_classifies(cfg):
+    # prune REWRITES the log — it must not ride in on the read-only rule.
+    assert evaluate("smart-approve prune --decision deny --before 2026-08-19", cfg).decision is None
+    assert evaluate("python3 -m smart_approve prune --session-id x", cfg).decision is None
+
+
+def test_explain_argument_is_data_not_execution(cfg):
+    # `explain` never runs its argument, it only parses it. A dangerous-looking
+    # argument must therefore neither trip a deny rule nor split into a second
+    # leaf — the whole call stays one leaf owned by the read-only rule.
+    r = evaluate("smart-approve explain 'rm -rf /'", cfg)
+    assert len(r.leaves) == 1
+    assert r.decision == "allow"
+    assert r.leaves[0].matched_rule == "smart-approve-read"
+
+
+def test_unrelated_binary_named_similarly_still_classifies(cfg):
+    assert evaluate("smart-approve-uninstall --all", cfg).decision is None
+
+
 # --- regression pins: behavior the change must NOT alter
+
+
+def test_trailing_redirect_cannot_launder_a_deny(cfg):
+    """The engine-level statement of the parser bug: a trailing `2>&1` used to
+    collapse a compound into one leaf, so the first command's allow rule
+    covered everything after it and every deny rule became bypassable."""
+    assert evaluate("cd /tmp && sudo apt install x 2>&1", cfg).decision == "deny"
+    assert evaluate("ls && rm -rf / 2>&1", cfg).decision == "deny"
+    assert evaluate("cd /x && git push --force origin main 2>&1", cfg).decision == "deny"
+
+
+def test_trailing_redirect_does_not_launder_an_unmatched_leaf(cfg):
+    """Same shape, quieter failure: an unmatched leaf must still reach the
+    classifier rather than inherit the first leaf's allow."""
+    assert evaluate("cd /tmp && somethingweird --flag 2>&1", cfg).decision is None
 
 
 def test_sudo_is_still_denied(cfg):

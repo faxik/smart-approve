@@ -269,6 +269,21 @@ rules:
     match: '^(\S*/)?tools/(worktree-setup|worktree-finish|pre-finish-checks)\.(sh|py)(\s|$)'
     decision: allow
 
+  # smart-approve's own read-only CLI. `explain` and `stats` only READ the
+  # decision log; `prune` REWRITES it and is deliberately excluded, so it
+  # keeps needing a decision. Added because `explain` — the command an
+  # operator runs to diagnose a prompt — was itself being asked (measured:
+  # 1448 ms classifier round-trip, verdict `ask`), i.e. the diagnostic tool
+  # generated the friction it exists to explain. `explain` never executes its
+  # argument, it only parses it, so a dangerous-looking argument is data.
+  - name: smart-approve-read
+    match: '^(\S*/)?smart-approve\s+(explain|stats)(\s|$)'
+    decision: allow
+
+  - name: smart-approve-read-module
+    match: '^(\S*/)?python3?\s+-m\s+smart_approve\s+(explain|stats)(\s|$)'
+    decision: allow
+
   - name: chmod-plus-x
     match: '^chmod\s+\+x(\s|$)'
     decision: allow
