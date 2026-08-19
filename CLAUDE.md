@@ -37,7 +37,7 @@ Data flow (single process per hook invocation — no daemon):
 bin/decide (bash shim) → .venv/bin/python -m smart_approve
   → __main__.main: read stdin JSON, short-circuit on non-Bash / empty / kill-switch
   → config.load(start_dir=cwd): merge default.yaml → global → nearest .smart-approve.yaml
-  → parser.parse(command): bashlex → leaves (split on && || ; |) + exotic-node set
+  → parser.parse(command): tree-sitter-bash (bashlex fallback) → leaves (split on && || ; |) + exotic-node set
   → engine.evaluate: rules applied per leaf, first match wins, rewrites capped at depth 3
   → aggregation: any deny→deny, all allow→allow, any unmatched OR exotic→None (classifier)
   → classifier.classify (only if unmatched): Haiku via Anthropic SDK → {decision, reason}
@@ -66,7 +66,7 @@ The `cwd` used for resolution is `payload["cwd"]` (Claude Code passes this), fal
 - `smart_approve/__main__.py` — dispatcher: argv present → CLI mode (`cli.main`); else → hook mode (`hook_main`: stdin/stdout contract, kill switch, top-level try/except).
 - `smart_approve/cli.py` — non-hook subcommands (currently `prune`); argparse-based, entry at `cli.main`.
 - `smart_approve/config.py` — YAML loading, layered merge, `Rule`/`Config` dataclasses, regex compile.
-- `smart_approve/parser.py` — bashlex wrapper → `ParsedCommand{leaves, exotic, parse_error}`.
+- `smart_approve/parser.py` — tree-sitter-bash primary / bashlex fallback → `ParsedCommand{leaves, exotic, parse_error}`.
 - `smart_approve/engine.py` — per-leaf rule application, rewrite loop, deny-wins aggregation.
 - `smart_approve/classifier.py` — Haiku call via Anthropic SDK; falls back to `ask` on any error.
 - `smart_approve/logger.py` — size-rotating JSONL writer.

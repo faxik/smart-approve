@@ -8,7 +8,7 @@ The classifier can auth via your Claude Max/Pro OAuth token (so Haiku calls bill
 
 When Claude Code is about to run a `Bash` tool call, this hook:
 
-1. Parses the command with `bashlex` to split compound commands (`&&`, `||`, `;`, `|`) into leaf commands.
+1. Parses the command with tree-sitter-bash (bashlex as fallback) to split compound commands (`&&`, `||`, `;`, `|`) into leaf commands.
 2. Detects exotic constructs (`$(…)`, `<(…)`, heredocs, backticks, `eval`, `source`, `.`) → escalates to the classifier rather than pretending regexes can reason about them.
 3. Applies layered regex rules to each leaf (project → global → packaged defaults). First match wins.
 4. Aggregates: **any deny wins**. All-allow → allow. Any unmatched → classifier.
@@ -111,6 +111,26 @@ Equivalent raw query (pre-`stats` era):
 ```bash
 jq 'select(.classifier_used) | .command' ~/.claude/smart-approve/decisions.jsonl | sort | uniq -c | sort -rn
 ```
+
+## Explaining a decision
+
+`smart-approve explain` is the per-command counterpart to `stats`' aggregate view: it shows the verdict leaf by leaf, and answers the question that actually matters when a call is slow or ends in a prompt — **which leaf had no rule**.
+
+```bash
+# Re-evaluate a command through the config as it stands NOW (rule layer only —
+# the classifier is never called, so an unmatched leaf reports "would be asked"):
+smart-approve explain 'cd /x && sed -i s/a/b/ f.py'
+
+# Replay a RECORDED decision from the log — knows the classifier's real verdict,
+# but describes the config as it was at that time:
+smart-approve explain --last
+smart-approve explain --grep 'sed -i.*adapter'
+
+# Test what a staged candidate config would do before installing it:
+smart-approve explain --config /tmp/staged.yaml 'some command'
+```
+
+The two modes are deliberately distinct and each labels itself: a command argument re-evaluates against the *current* config; `--last`/`--grep` replays a *recorded* trace. One boundary worth knowing: a classifier `allow` still runs the command, so a permission prompt you saw for an allowed command came from `settings.json` permissions or Claude Code's own permission classifier — not from this hook.
 
 ## Pruning the log
 
