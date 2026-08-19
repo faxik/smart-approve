@@ -42,9 +42,13 @@ rules:
     rewrite_to: '\1'
 
   # Strip an `env VAR=val …` command prefix the same way (the `env` binary
-  # form of the assignment prefix above).
+  # form of the assignment prefix above). Same UPPERCASE-only name class as
+  # that rule on purpose: a rewrite re-matches the remainder against every
+  # rule, so a wider class here would silently promote `path=/x cat /etc/x`
+  # from a classifier call to an `fs-read` allow. Widen both together or
+  # neither.
   - name: env-cmd-prefix
-    match: '^env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+(.*)$'
+    match: '^env\s+(?:[A-Z_][A-Z0-9_]*=\S*\s+)+(.*)$'
     decision: rewrite
     rewrite_to: '\1'
 
@@ -183,8 +187,15 @@ rules:
 
   # Cross-model review runs: codex CLI pinned to its read-only sandbox. The
   # non-read-only forms stay with the classifier.
+  #
+  # The flag must appear in FLAG position, not merely somewhere in the leaf:
+  # `[^'"]*` cannot cross into the quoted prompt, so a prompt that happens to
+  # mention `--sandbox read-only` no longer vouches for the run it is part of.
+  # Measured before this anchor:
+  #   codex exec --sandbox danger-full-access 'fix X (--sandbox read-only …)'
+  # was ALLOWED — full disk access granted with no prompt.
   - name: codex-exec-readonly
-    match: '^codex\s+exec\s(?=.*--sandbox\s+read-only)'
+    match: '^codex\s+exec\s(?=[^''"]*--sandbox\s+read-only(\s|$))'
     decision: allow
 
   # `kill -0 PID` is a pure existence probe — sends no signal. Real signals

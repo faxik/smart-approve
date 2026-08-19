@@ -76,6 +76,21 @@ def test_backends_agree_on_which_commands_a_redirected_compound_contains():
         assert heads_ts == heads_bl, f"{cmd!r}: tree-sitter {heads_ts} != bashlex {heads_bl}"
 
 
+def test_redirected_wrapper_leaf_rule_fails_closed_on_unknown_bodies():
+    """The single-leaf case is an allow-list, so new grammar nodes fail CLOSED.
+
+    `negated_command` was the hole a blocklist left open: `! (…) 2>&1` was
+    emitted as one leaf holding two commands, which is the shape the redirect
+    collapse fix exists to prevent.
+    """
+    assert parse("! (cd /tmp; sudo rm -rf /x) 2>&1").leaves == ["cd /tmp", "sudo rm -rf /x"]
+
+    # Single-unit bodies still stay whole — `test_command` is one execution
+    # unit, and fs-read matches on the redirect being kept in the leaf text.
+    assert parse("[[ -f x ]] 2>&1").leaves == ["[[ -f x ]] 2>&1"]
+    assert parse("cat > /tmp/x.md").leaves == ["cat > /tmp/x.md"]
+
+
 def test_non_ascii_text_does_not_shift_leaf_boundaries():
     """Regression: tree-sitter offsets are BYTES; the leaf text is a str.
 

@@ -51,23 +51,22 @@ _TS_EXOTIC_MAP = {
 
 _TS_SUBSTITUTION_TYPES = frozenset({"command_substitution", "process_substitution"})
 
-# Node types that hold MORE THAN ONE execution unit. A `redirected_statement`
-# wrapping one of these must be descended into rather than emitted as a single
-# leaf — see the comment at the descent in `_ts_parse`.
-_TS_COMPOUND_TYPES = frozenset(
+# Body types that are exactly ONE execution unit, so a `redirected_statement`
+# wrapping one may be emitted as a single leaf (keeping the redirect in the
+# leaf text, which rules like fs-read `cat > file` match on).
+#
+# Stated as an allow-list rather than a list of compound types on purpose: a
+# blocklist fails OPEN — any grammar node not enumerated re-creates the
+# multi-command leaf this guard exists to prevent, and `negated_command` was
+# already such a hole (`! (cd /tmp; sudo rm -rf /x) 2>&1` came out as one
+# leaf). Anything unrecognized is now descended into instead.
+_TS_SINGLE_UNIT_BODY_TYPES = frozenset(
     {
-        "list",
-        "pipeline",
-        "subshell",
-        "compound_statement",
-        "redirected_statement",
-        "if_statement",
-        "while_statement",
-        "until_statement",
-        "for_statement",
-        "c_style_for_statement",
-        "case_statement",
-        "function_definition",
+        "command",
+        "test_command",
+        "declaration_command",
+        "unset_command",
+        "variable_assignment",
     }
 )
 
@@ -120,12 +119,12 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
             # Descend at the SAME level instead, so the inner commands become
             # leaves. The bashlex fallback never had this bug and is the
             # reference; tests/test_parser.py pins the two against each other.
-            if ntype == "redirected_statement" and any(
-                child.type in _TS_COMPOUND_TYPES for child in node.children
-            ):
-                for child in node.children:
-                    walk(child, in_sub)
-                return
+            if ntype == "redirected_statement":
+                body = node.child_by_field_name("body")
+                if body is None or body.type not in _TS_SINGLE_UNIT_BODY_TYPES:
+                    for child in node.children:
+                        walk(child, in_sub)
+                    return
             # Skip command nodes whose parent is redirected_statement —
             # the parent captures the full text including redirections.
             if ntype == "command" and node.parent and node.parent.type == "redirected_statement":

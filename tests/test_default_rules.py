@@ -208,6 +208,31 @@ def test_codex_exec_writable_sandbox_still_classifies(cfg):
     assert evaluate("codex exec 'p'", cfg).decision is None
 
 
+def test_codex_sandbox_flag_must_be_in_flag_position_not_in_the_prompt(cfg):
+    """A prompt mentioning the flag must not vouch for the run it belongs to.
+
+    The original lookahead was unanchored, so the string appearing anywhere in
+    the leaf — including inside the quoted prompt — allowed the command. That
+    granted `danger-full-access` with no prompt.
+    """
+    for cmd in (
+        "codex exec --sandbox danger-full-access 'fix X (--sandbox read-only was tried)'",
+        "codex exec 'do it --sandbox read-only'",
+        'codex exec --sandbox workspace-write "note: --sandbox read-only"',
+    ):
+        assert evaluate(cmd, cfg).decision is None, cmd
+
+
+def test_env_cmd_prefix_does_not_rewrite_lowercase_assignments(cfg):
+    """`env-cmd-prefix` shares `env-var-prefix`'s uppercase name class.
+
+    A rewrite re-matches the remainder against every rule, so a wider class
+    would promote this from a classifier call to an `fs-read` allow.
+    """
+    assert evaluate("env path=/x cat /etc/shadow", cfg).decision is None
+    assert evaluate("env FOO=1 ls", cfg).decision == "allow"
+
+
 # --- smart-approve's own read-only CLI
 #
 # Added because giving the operator `explain` created new friction: the
