@@ -365,6 +365,64 @@ def test_smart_approve_module_form_is_not_allowed(cfg):
     assert evaluate("smart-approve stats", cfg).decision == "allow"
 
 
+def test_git_split_tools_are_rule_allowed(cfg):
+    """The history-preserving split idiom, in every documented invocation form.
+
+    This was the single unmatched leaf in a real `explain` trace of a split
+    command — every other leaf already had a rule.
+    """
+    for cmd in (
+        '.venv/bin/python3 /home/faxik/bin/git-split2.py -y "src/a.js:213-221:src/layers/g.js"',
+        "/home/u/w/proj/.venv/bin/python3 /home/u/bin/git-split2.py -y src/a.js",
+        "python3 /home/u/bin/git-split2.py -y src/a.py",
+        "/home/u/bin/git-split2.py -y src/a.py",
+        "bash /home/u/bin/git-split src/orig.js src/copy.js",
+        "/home/u/bin/git-split src/orig.js src/copy.js",
+    ):
+        assert evaluate(cmd, cfg).decision == "allow", cmd
+
+
+def test_git_split_rule_names_tools_and_fails_closed(cfg):
+    """Named tools, not the whole of ~/bin, and no shell-rewritable arguments.
+
+    The substitution cases are stricter than the rest of this file on purpose
+    — see `test_substitution_in_arguments_is_not_escalated_once_a_rule_matches`
+    for the general gap this does NOT fix.
+    """
+    for cmd in (
+        "python3 /home/u/bin/something-else.py",  # not a named split tool
+        "/home/u/bin/git-split2-evil.py",  # name-prefix smuggling
+        r"python3 /home/u/bin/../../etc/evil.py",
+        r"python3 /home/u/bin/\.\./\.\./etc/evil.py",
+        "python3 /home/u/bin/git-split2.py $(rm -rf /x)",
+        "python3 /home/u/bin/git-split2.py `rm -rf /x`",
+        "python3 /home/u/bin/git-split2.py $EVIL",
+        "python3 /tmp/evil/bin/git-split2.py",  # not under /home/<user>/bin
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+    # Deny still wins over the allow when a dangerous sibling shares the line.
+    assert evaluate("/home/u/bin/git-split2.py -y a && sudo rm -rf /x", cfg).decision == "deny"
+
+
+def test_substitution_in_arguments_is_not_escalated_once_a_rule_matches(cfg):
+    """KNOWN GAP, pinned so it is a decision rather than a surprise.
+
+    `ast_escalate` lists `command_substitution`, but the engine escalates only
+    an UNMATCHED leaf — so any allow rule overrides it and the substitution,
+    which EXECUTES, rides along. The documented invariant ("rules are tried
+    first; only an unmatched leaf falls to the classifier") was written for
+    heredocs, whose bodies really are argument data; `$(…)` is code, and the
+    two got the same treatment.
+
+    Closing it is a config-wide behaviour change, not a rule fix. This test
+    asserts today's behaviour so the change is visible when someone makes it.
+    """
+    assert evaluate("ls $(rm -rf /x)", cfg).decision == "allow"
+    assert evaluate("git status $(rm -rf /x)", cfg).decision == "allow"
+    assert "command_substitution" in cfg.ast_escalate
+
+
 def test_no_rule_backtracks_catastrophically_on_a_long_leaf(cfg):
     """A hook that stalls is a hook that prompts.
 

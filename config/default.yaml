@@ -214,6 +214,32 @@ rules:
     match: '^(?!.*\.\.)(bash\s+)?\S*/\.claude/skills/\S+\.(sh|py)(\s|$)'
     decision: allow
 
+  # The history-preserving file-split tools in ~/bin: `git-split2.py` (marker
+  # and range mode) and the `git-split` copy-delete fallback. Splitting code
+  # between files is required to go through one of these rather than a manual
+  # copy-paste, which would destroy `git blame` provenance — so the idiom
+  # recurs on every extraction, and it was the ONE unmatched leaf in a real
+  # `explain` trace of a split command (everything else already had a rule).
+  #
+  # Named tools, not all of ~/bin: an allowlist entry for a whole personal
+  # script directory would auto-allow anything later dropped in it. The
+  # interpreter prefix is optional and path-tolerant so the venv form
+  # (`.venv/bin/python3 …`), a bare `python3 …`, `bash …`, and direct
+  # execution all match. Path tokens exclude \ $ ` and `..` for the same
+  # reason the scratchpad rules do — a lexical path check is only as good as
+  # the shell's inability to rewrite the path afterwards.
+  #
+  # The leading `(?!.*[$\x60])` also rejects substitution/expansion ANYWHERE in
+  # the leaf, arguments included. That is stricter than the rest of this file,
+  # where `ls $(rm -rf /x)` currently rule-allows: `ast_escalate` lists
+  # command_substitution, but the engine only escalates an UNMATCHED leaf, so
+  # any allow rule overrides it. Split invocations take file paths and range
+  # specs — never a substitution — so failing closed here costs nothing. It
+  # does NOT fix the general case; see the note in CLAUDE.md.
+  - name: git-split-tools
+    match: '^(?!.*\.\.)(?!.*[$\x60])(?:(?:[^\s\\]*/)?(?:python3?|bash)\s+)?/home/[^/\s]+/bin/git-split2?(?:\.py)?(\s|$)'
+    decision: allow
+
   # Cross-model review runs: codex CLI pinned to its read-only sandbox. The
   # non-read-only forms stay with the classifier.
   #
