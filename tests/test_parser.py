@@ -114,14 +114,24 @@ def test_non_ascii_text_does_not_shift_leaf_boundaries():
 
 
 def test_known_backend_divergence_bare_variable_assignments():
-    """PINNED DIVERGENCE, not a bug — found while fixing the redirect collapse.
+    """PINNED DIVERGENCE — narrower than this test once claimed.
 
     tree-sitter classifies a bare `a=1` inside a list as `variable_assignment`,
-    not `command`, so it is not emitted as a leaf; bashlex emits it. This is
-    benign and deliberately left alone because an assignment executes nothing,
-    and — the part that actually matters — a dangerous SIBLING is still its own
-    leaf, so deny rules keep firing. Pinned so a future parser change has to
-    face the question rather than silently widen it.
+    not `command`, so it is not emitted as a leaf; bashlex emits it.
+
+    This was originally pinned as "benign because an assignment executes
+    nothing". A cross-model review disproved that: an assignment executes
+    nothing but it sets STATE a later leaf consumes, and dropping the leaf hides
+    that state from the rules. The concrete case was
+    `ESC=../.. ; rm -rf /tmp/claude-1000/$ESC/home/u/proj` — the surviving `rm`
+    leaf looked scratchpad-contained and was ALLOWED, while bash traversed out.
+
+    That exploit is now closed one layer down: scratchpad path tokens reject
+    `$`, so an expanded path cannot claim containment (see
+    tests/test_default_rules.py). The divergence itself is still here, so what
+    this test pins is the residual safety property — a dangerous SIBLING is its
+    own leaf and deny rules keep firing — not a claim that dropping the
+    assignment is harmless.
     """
     from smart_approve.parser import _bashlex_parse
 
