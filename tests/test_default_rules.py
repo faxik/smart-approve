@@ -423,6 +423,9 @@ def test_substitution_in_arguments_is_escalated_even_when_a_rule_matches(cfg):
     # A dangerous inner command is now DENIED outright, not merely escalated:
     # deny rules reach inside the substitution.
     assert evaluate("ls $(sudo rm -rf /x)", cfg).decision == "deny"
+    # NOT load-bearing: `ast_escalate` no longer gates anything (the engine uses
+    # `set(exotic) - _RIDE_ALONG`). Kept only to pin that the packaged key still
+    # parses for config compatibility. Deleting it would not weaken the fix.
     assert "command_substitution" in cfg.ast_escalate
 
 

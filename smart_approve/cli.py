@@ -323,7 +323,7 @@ def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> in
     would answer for an unmatched leaf is not predictable offline, so the
     report says "would be asked", never guesses a verdict.
     """
-    from .engine import _RIDE_ALONG, evaluate
+    from .engine import escalating_exotic_kinds, evaluate
 
     config = load_config(
         explicit=args.config,
@@ -342,7 +342,7 @@ def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> in
         # expression dropped any kind missing from `ast_escalate` (`function_def`,
         # `backticks`), so `explain` would report "not escalating" for commands
         # the engine escalates.
-        escalating = sorted(set(result.parsed.exotic) - _RIDE_ALONG)
+        escalating = escalating_exotic_kinds(result.parsed.exotic)
         note = "detected" if not escalating else f"detected, escalating: {', '.join(escalating)}"
         out(f"exotic:  {', '.join(result.parsed.exotic)} ({note})")
         out("         note: exotic constructs do NOT bypass rules — rules are tried on each leaf's")

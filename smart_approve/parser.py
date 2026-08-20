@@ -46,11 +46,32 @@ _EXOTIC_FIRST_WORDS = {"eval": "eval", "source": "source_or_dot", ".": "source_o
 # `$(` inside single quotes are tagged too. A false tag costs one classifier
 # call; a missed one costs silent arbitrary execution. Mirrors the pre-existing
 # textual backtick guard this replaces.
-_LEXICAL_EXOTIC = ((r"$(", "command_substitution"), ("`", "command_substitution"), (r"<(", "process_substitution"), (r">(", "process_substitution"))
+# Bash removes an unquoted backslash-newline BEFORE interpreting anything, so
+# `$\<newline>(cmd)` is a `$(` the raw text does not contain. Rejoin first.
+_LINE_CONTINUATION = re.compile(r"\\\n")
+
+_LEXICAL_PATTERNS = (
+    (re.compile(r"\$\("), "command_substitution"),
+    (re.compile(r"`"), "command_substitution"),
+    (re.compile(r"<\("), "process_substitution"),
+    (re.compile(r">\("), "process_substitution"),
+    # bash 5.3 alternate command substitutions: `${ cmd; }` and `${| cmd; }`.
+    # They run in the CURRENT shell and keep side effects. Neither backend
+    # models them and neither contains `$(`. Verified executing on 5.3.9:
+    # `echo ${ touch /tmp/M; }` creates the file. `${x}` never has a space or a
+    # pipe in that position, so this cannot collide with ordinary expansion.
+    (re.compile(r"\$\{[\s|]"), "command_substitution"),
+    # `${x@P}` re-expands the value as a prompt, which performs command
+    # substitution — so a `$(` can be assembled at runtime and never appear in
+    # the command text: `x="$"; x+="(cmd)"; echo "${x@P}"` executes it.
+    # Requires a LETTER before `}`, so `${a[@]}` (array expansion) is untouched.
+    (re.compile(r"@[A-Za-z]\}"), "param_transform"),
+)
 
 
 def _lexical_exotic(cmd: str) -> list[str]:
-    return [tag for token, tag in _LEXICAL_EXOTIC if token in cmd]
+    flat = _LINE_CONTINUATION.sub("", cmd)
+    return [tag for pattern, tag in _LEXICAL_PATTERNS if pattern.search(flat)]
 
 
 def _finalize(cmd: str, leaves: list[str], exotic: list[str], saw_top_level: bool = True) -> ParsedCommand:

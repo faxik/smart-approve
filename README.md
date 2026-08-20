@@ -55,7 +55,7 @@ Loads in order (later overrides earlier):
 Merge semantics:
 - Scalar / dict fields (`log`, `classifier`, `defaults`): shallow merge, later wins.
 - `rules`: **later layers prepend** — project rules evaluate before global before defaults.
-- `ast_escalate`: set union.
+- `ast_escalate`: set union. **Compatibility only — it no longer decides escalation.** Since CB-5 the engine escalates on `set(exotic) - engine._RIDE_ALONG`, i.e. anything that executes and is not a plain heredoc body. That subtraction is taken from the FULL set of detected constructs, so a kind missing from `ast_escalate` still escalates; the old intersection form failed open on `function_def` and `backticks`, which the parser emits but the packaged list omits. Setting this key changes nothing.
 - `disable_rules`: set of rule names to drop from the merged config (e.g. project wants to disable a default rule that's too permissive).
 
 ## Example project override

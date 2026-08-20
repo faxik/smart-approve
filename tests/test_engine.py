@@ -217,7 +217,7 @@ def test_parse_error_ask_preserves_backcompat():
     assert r.decision == "ask"
 
 
-def test_quoted_heredoc_commit_resolved_by_rules():
+def test_quoted_heredoc_commit_escalates_on_its_substitution():
     # The real command from the log — heredoc + command substitution in the
     # commit message argument.  Both leaves (add, commit) match rules, so
     # the exotic content doesn't force classifier escalation.

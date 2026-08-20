@@ -45,6 +45,15 @@ _REWRITE_MAX_DEPTH = 3
 _RIDE_ALONG = frozenset({"heredoc"})
 
 
+def escalating_exotic_kinds(exotic: list[str]) -> list[str]:
+    """Exotic kinds that force escalation — the engine's actual predicate.
+
+    Public so `cli.py` reports what the engine decides. `explain` used to
+    compute `exotic & ast_escalate`, which silently disagreed with the gate.
+    """
+    return sorted(set(exotic) - _RIDE_ALONG)
+
+
 def _apply_rules(leaf: str, rules: list[Rule]) -> LeafTrace:
     trace = LeafTrace(original=leaf, final=leaf, decision=None, matched_rule=None)
     current = leaf
@@ -80,6 +89,14 @@ def evaluate(command: str, config: Config) -> EngineResult:
       None    — any leaf unmatched OR exotic construct; caller consults classifier
     """
     parsed = parse(command)
+    # Computed BEFORE the parse-error branch on purpose. That branch used to
+    # return a raw-text rule match without ever consulting this, so every
+    # mechanism guarding a substitution was bypassed by any command bashlex
+    # could not parse — including the lexical tagging the parse-error return in
+    # `parser.py` adds specifically "to guarantee the engine escalates".
+    # Measured on the real corpus under the supported bashlex-only install:
+    # 99 of 316 parse-error commands were allowed this way.
+    escalating_exotic = bool(set(parsed.exotic) - _RIDE_ALONG)
 
     if parsed.parse_error:
         action = config.defaults.on_parse_error
@@ -90,13 +107,16 @@ def evaluate(command: str, config: Config) -> EngineResult:
             stripped = command.strip().split("\n", 1)[0]
             if stripped:
                 t = _apply_rules(stripped, config.rules)
-                if t.decision is not None:
+                # A deny may still short-circuit — deny always wins, and a
+                # rule that fires on unparseable text is if anything more
+                # trustworthy. An ALLOW may not: we could not parse the
+                # command, so we cannot claim to know what else it runs.
+                if t.decision == "deny":
                     return EngineResult(
-                        parsed=parsed,
-                        leaves=[t],
-                        decision=t.decision,
-                        deny_reason=t.reason if t.decision == "deny" else None,
+                        parsed=parsed, leaves=[t], decision="deny", deny_reason=t.reason
                     )
+                if t.decision is not None and not escalating_exotic:
+                    return EngineResult(parsed=parsed, leaves=[t], decision=t.decision)
             # No rule matched — escalate to classifier.
             return EngineResult(
                 parsed=parsed,
@@ -133,7 +153,7 @@ def evaluate(command: str, config: Config) -> EngineResult:
     # What an all-allow result may NOT do is carry an executing construct along
     # with it (CB-5). `has_exotic` used to be computed here and then dropped on
     # the all-allow return, so it gated nothing while reading like a guard.
-    has_exotic = bool(set(parsed.exotic) - _RIDE_ALONG)
+    has_exotic = escalating_exotic
 
     leaves: list[LeafTrace] = []
     any_unmatched = False

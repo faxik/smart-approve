@@ -190,6 +190,92 @@ def test_heredoc_body_alone_still_rides_along(cfg):
     assert evaluate(plain, cfg).decision == "allow"
 
 
+def test_parse_error_does_not_launder_an_allow(cfg, monkeypatch):
+    """A command we could not parse cannot be claimed safe by a raw-text rule.
+
+    The parse-error branch matched rules against the raw first line and returned
+    that verdict before the exotic gate was ever consulted — defeating all three
+    mechanisms, including the lexical tag that `parser.py` adds on this exact
+    path "to guarantee the engine escalates". Worst under the bashlex-only
+    install, which is supported (tree-sitter is not a declared dependency):
+    measured 99 of 316 parse-error commands in the real log were allowed.
+
+    A deny may still short-circuit — deny always wins.
+    """
+    monkeypatch.setattr("smart_approve.parser._TS_AVAILABLE", False)
+    for cmd in (
+        "echo $(sudo rm -rf /x && true)",
+        "git status $(sudo rm -rf /x && true)",
+        'cd /tmp && echo "`touch /tmp/PWN` and `echo (a)`"',
+    ):
+        r = evaluate(cmd, cfg)
+        assert r.parsed.parse_error is not None, cmd  # precondition
+        assert r.decision != "allow", cmd
+
+
+def test_bashlex_only_install_is_not_the_weaker_gate(cfg, monkeypatch):
+    """The engine-level counterpart to the parser-level bashlex test.
+
+    Asserting on `_bashlex_parse(...).exotic` alone missed the parse-error
+    early return entirely, because that path never reaches the gate.
+    """
+    monkeypatch.setattr("smart_approve.parser._TS_AVAILABLE", False)
+    for cmd in MUST_NOT_ALLOW:
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+
+# bash 5.3 added `${ cmd; }` and `${| cmd; }`. They run in the CURRENT shell,
+# contain none of `$(`/backtick/`<(`/`>(`, and are not AST nodes in either
+# backend. Verified executing on 5.3.9: `echo ${ touch /tmp/M; }` creates it.
+BASH53_FUNSUBS = [
+    "ls ${ sudo rm -rf /x; }",
+    "ls ${| sudo rm -rf /x; }",
+    "echo ${ sudo rm -rf /x; }",
+    "cat README.md ${ chmod 777 /etc/shadow; }",
+    # ...including inside a heredoc body, which lands on the ONE exemption
+    # `_RIDE_ALONG` grants: without a tag of its own this was `exotic=['heredoc']`
+    # and rode along to `allow` while executing.
+    "cat <<EOF\n${ sudo rm -rf /x; }\nEOF",
+]
+
+
+@pytest.mark.parametrize("cmd", BASH53_FUNSUBS)
+def test_bash53_funsubs_do_not_ride_along(cmd, cfg):
+    assert evaluate(cmd, cfg).decision != "allow", cmd
+
+
+def test_runtime_constructed_substitution_is_flagged(cfg):
+    """`${x@P}` re-expands a value as a prompt, performing substitution.
+
+    So `$(` can be assembled at runtime and never appear in the command text.
+    Both the single-command form and the two-statement form are covered; the
+    cross-INVOCATION form cannot be (the hook sees one command at a time) and
+    is tracked separately as CB-6.
+    """
+    for cmd in (
+        'x="$"; x+="(printf PWN >&2)"; echo "${x@P}"',
+        "X=$'\\x24\\x28touch /tmp/PWN\\x29'; ls \"${X@P}\"",
+        'echo "${x@P}"',
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+    # An array expansion must NOT be caught by the `@X}` pattern.
+    assert parse("echo ${a[@]}").exotic == []
+    assert evaluate("echo ${a[@]}", cfg).decision == "allow"
+
+
+def test_line_continuation_cannot_split_a_substitution_token(cfg):
+    """Bash removes an unquoted backslash-newline before interpreting anything.
+
+    `$\\<newline>(cmd)` is therefore a `$(` that the raw text does not contain.
+    In the pattern half of a parameter expansion the AST does not see it either,
+    so the lexical scan must rejoin continuations before matching.
+    """
+    cmd = "echo ${x#$\\\n(sudo rm -rf /x)}"
+    assert "command_substitution" in parse(cmd).exotic
+    assert evaluate(cmd, cfg).decision != "allow"
+
+
 def test_escalation_is_fail_closed_for_unknown_exotic_kinds(cfg):
     """`function_def` and `backticks` are emitted but absent from ast_escalate.
 
