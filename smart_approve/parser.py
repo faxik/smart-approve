@@ -130,6 +130,14 @@ _TS_SINGLE_UNIT_BODY_TYPES = frozenset(
     }
 )
 
+# Node types that CARRY EXECUTION and can turn up nested inside a
+# `heredoc_redirect`, which is where tree-sitter puts anything written after
+# `<<TAG` on the same line. Kept as an allow-list of "this executes" rather than
+# a blocklist, for the same fail-closed reason as _TS_SINGLE_UNIT_BODY_TYPES.
+_TS_HIDDEN_EXEC_TYPES = frozenset(
+    {"pipeline", "list", "command", "redirected_statement", "subshell", "compound_statement"}
+)
+
 _ts_parser: _TSParser | None = None
 
 
@@ -198,6 +206,33 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
                 if body is None or body.type not in _TS_SINGLE_UNIT_BODY_TYPES:
                     for child in node.children:
                         walk(child, in_sub, sub_depth)
+                    return
+                # ...and a HEREDOC hides the compound somewhere else entirely.
+                # Everything written after `<<TAG` on that line is parsed INSIDE
+                # the sibling `heredoc_redirect` node, not in `body`. So
+                # `cat <<'EOF' | bash` has body.type == "command" — passing the
+                # single-unit check above — while a whole `| bash` pipeline sits
+                # in the redirect node. It came out as ONE leaf whose first line
+                # is `cat <<'EOF' | bash`, matched `fs-read` on the leading
+                # `cat`, and returned ALLOW: arbitrary shell, no prompt, with
+                # `heredoc` as the only exotic tag so the gate exempted it.
+                # `| sudo bash` and `&& rm -rf ~` laundered the same way.
+                hidden = [
+                    grand
+                    for child in node.children
+                    if child.type == "heredoc_redirect"
+                    for grand in child.children
+                    if grand.type in _TS_HIDDEN_EXEC_TYPES
+                ]
+                if hidden:
+                    leaves.append(data[body.start_byte : body.end_byte].decode("utf-8", "replace"))
+                    if sub_depth == 0:
+                        saw_top_level = True
+                    for grand in hidden:
+                        walk(grand, in_sub, sub_depth)
+                    for child in node.children:
+                        if child.type != "heredoc_redirect":
+                            walk(child, True, sub_depth)
                     return
             # Skip command nodes whose parent is redirected_statement —
             # the parent captures the full text including redirections.

@@ -276,6 +276,79 @@ def test_line_continuation_cannot_split_a_substitution_token(cfg):
     assert evaluate(cmd, cfg).decision != "allow"
 
 
+# A heredoc is the ONE exotic kind `_RIDE_ALONG` exempts, so anything that
+# smuggles execution past it lands directly on the gate's designed weak point.
+# tree-sitter puts everything written after `<<TAG` INSIDE the sibling
+# `heredoc_redirect` node, so `body.type` is a bare `command` and the
+# single-unit check passed while a whole pipeline hid in the redirect. Result:
+# one leaf whose first line is `cat <<'EOF' | bash`, matched by `fs-read` on the
+# leading `cat` -> ALLOW. Arbitrary shell with no prompt, verified executing.
+HEREDOC_HIDDEN_PIPELINES = [
+    "cat <<'EOF' | bash\ntouch /tmp/M\nEOF",
+    "cat <<'EOF' | sudo bash\ntouch /tmp/M\nEOF",
+    "cat <<'EOF' | sh\nx\nEOF",
+    "cat <<'EOF' | python3\nx\nEOF",
+    "cat <<'EOF' | grep x | bash\nx\nEOF",
+    "cat <<'EOF' | xargs rm -rf\nx\nEOF",
+    "cat <<'EOF' && rm -rf /home/u/w\nx\nEOF",
+    "cat <<'EOF' | tee /home/u/.bashrc\nx\nEOF",
+]
+
+
+@pytest.mark.parametrize("cmd", HEREDOC_HIDDEN_PIPELINES)
+def test_heredoc_cannot_hide_a_pipeline_behind_its_redirect(cmd, cfg):
+    assert evaluate(cmd, cfg).decision != "allow", cmd
+
+
+def test_heredoc_hidden_pipeline_is_split_into_real_leaves(cfg):
+    """The command after the heredoc must be its OWN leaf, so deny rules see it."""
+    assert parse("cat <<'EOF' | bash\nx\nEOF").leaves == ["cat", "bash"]
+    # ...and a deny rule then fires on it, rather than merely escalating.
+    assert evaluate("cat <<'EOF' | sudo bash\nx\nEOF", cfg).decision == "deny"
+    # A heredoc with nothing hidden behind it is still one leaf and still allowed.
+    assert evaluate("cat <<'EOF'\njust text\nEOF", cfg).decision == "allow"
+
+
+def test_rewrite_cap_does_not_launder_a_deny(cfg):
+    """Exceeding the rewrite cap sets the LEAF to `ask` — the aggregate must follow.
+
+    Aggregation tested only for `deny` and `None`, so an `ask` leaf matched
+    neither branch and fell through to the all-allow return. That made the
+    rewrite cap a universal deny-rule launderer: enough strip-rewrites in front
+    of any command and its rule never runs.
+    """
+    assert evaluate("sudo rm -rf /home/u/w", cfg).decision == "deny"  # precondition
+    for cmd in (
+        "nohup nohup nohup sudo rm -rf /home/u/w",
+        "timeout 1 nohup setsid nohup sudo rm -rf /x",
+        "env A=1 nohup setsid nohup sudo rm -rf /x",
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+
+def test_parse_error_fallbacks_respect_the_gate(cfg, monkeypatch):
+    """`on_parse_error` is a supported knob; `allow` must not blanket-approve.
+
+    Also pins that `ask` is PRESERVED rather than sent to the classifier — an
+    earlier revision gated every non-deny verdict, which turned `ask` (prompts
+    the user) into `None` (classifier, may answer allow). That is a weakening,
+    and the corpus replay could not detect it because the decision log contains
+    zero `ask` verdicts.
+    """
+    monkeypatch.setattr("smart_approve.parser._TS_AVAILABLE", False)
+    exotic_unparseable = "echo $(sudo rm -rf /x && true)"
+    original = cfg.defaults.on_parse_error
+    try:
+        for action in ("classify", "ask", "deny", "allow"):
+            cfg.defaults.on_parse_error = action
+            assert evaluate(exotic_unparseable, cfg).decision != "allow", action
+    finally:
+        # `cfg` is module-scoped; leaking a mutation would poison later tests.
+        cfg.defaults.on_parse_error = original
+    # `ask` from the rewrite guard survives the parse-error path unweakened.
+    assert evaluate("nohup nohup nohup echo hi $( ;;", cfg).decision == "ask"
+
+
 def test_escalation_is_fail_closed_for_unknown_exotic_kinds(cfg):
     """`function_def` and `backticks` are emitted but absent from ast_escalate.
 

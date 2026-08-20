@@ -26,7 +26,15 @@ class EngineResult:
     exotic_escalation: bool = False
 
 
-_REWRITE_MAX_DEPTH = 3
+# Raised 3 -> 6. The cap exists to stop an infinite rewrite loop, NOT as a
+# security boundary — and at 3 it was acting as one, badly. Real commands stack
+# safe wrappers: `cd X && ENV=1 setsid nohup timeout 720 cmd` spends four hops
+# on prefix stripping before the real command is even visible, so it hit the cap
+# and (before the `any_ask` fix below) fell through to ALLOW. At 6 both sides
+# improve: `nohup nohup nohup sudo rm -rf /x` now strips through to its DENY
+# rule instead of stopping at `ask`, and 8 legitimate stacked-wrapper commands
+# in the real log stop prompting. 8 gives nothing over 6 on the corpus.
+_REWRITE_MAX_DEPTH = 6
 
 # Exotic kinds allowed to ride along on a leaf every rule allowed. ONLY kinds
 # whose payload is argument DATA belong here.
@@ -115,8 +123,23 @@ def evaluate(command: str, config: Config) -> EngineResult:
                     return EngineResult(
                         parsed=parsed, leaves=[t], decision="deny", deny_reason=t.reason
                     )
-                if t.decision is not None and not escalating_exotic:
+                # Only an ALLOW is gated. Sending `ask` to the classifier would
+                # WEAKEN it — `ask` prompts the user, while the classifier may
+                # answer allow. An earlier revision gated every non-deny verdict
+                # and did exactly that; the corpus replay could not see it
+                # because the log contains zero `ask` verdicts, so the
+                # measurement was blind to the one bucket that regressed.
+                if t.decision is not None and (t.decision != "allow" or not escalating_exotic):
                     return EngineResult(parsed=parsed, leaves=[t], decision=t.decision)
+                if t.decision == "allow":
+                    # Unparseable AND carrying something that executes, with a
+                    # regex vouching for the first line only. Prompt the user
+                    # rather than the classifier: this is the weakest evidence
+                    # the engine ever acts on. Measured cost on 33,007 real
+                    # commands: ZERO reach here, so strictness is free.
+                    return EngineResult(
+                        parsed=parsed, leaves=[t], decision="ask", exotic_escalation=True
+                    )
             # No rule matched — escalate to classifier.
             return EngineResult(
                 parsed=parsed,
@@ -130,6 +153,26 @@ def evaluate(command: str, config: Config) -> EngineResult:
                     )
                 ],
                 decision=None,
+                exotic_escalation=escalating_exotic,
+            )
+        # `on_parse_error: allow` is a supported value (types.ParseErrorAction).
+        # It must not blanket-approve a command we could not parse that also
+        # carries something executing — that is the same laundering the classify
+        # branch above refuses, reached through config instead.
+        if action == "allow" and escalating_exotic:
+            return EngineResult(
+                parsed=parsed,
+                leaves=[
+                    LeafTrace(
+                        original=command,
+                        final=command,
+                        decision=None,
+                        matched_rule="parse-error",
+                        reason=parsed.parse_error,
+                    )
+                ],
+                decision=None,
+                exotic_escalation=True,
             )
         fallback: Decision = action
         return EngineResult(
@@ -157,6 +200,7 @@ def evaluate(command: str, config: Config) -> EngineResult:
 
     leaves: list[LeafTrace] = []
     any_unmatched = False
+    any_ask = False
     deny_reason: str | None = None
     for leaf in parsed.leaves:
         # First line only: heredoc bodies and multi-line arguments are
@@ -169,11 +213,22 @@ def evaluate(command: str, config: Config) -> EngineResult:
         leaves.append(t)
         if t.decision == "deny":
             deny_reason = t.reason or f"denied by rule {t.matched_rule}"
+        elif t.decision == "ask":
+            any_ask = True
         elif t.decision is None:
             any_unmatched = True
 
     if deny_reason is not None:
         return EngineResult(parsed=parsed, leaves=leaves, decision="deny", deny_reason=deny_reason)
+    if any_ask:
+        # A leaf that resolved to `ask` — today only `rewrite-loop-guard`, when
+        # the rewrite cap is exceeded — used to match NEITHER the deny branch
+        # nor the unmatched branch, so it fell through to the all-allow return.
+        # That made the rewrite cap a universal deny-rule launderer:
+        # `nohup nohup nohup sudo rm -rf /x` returned ALLOW while the bare
+        # command denies. CLAUDE.md claimed the cap "falls through to ask" —
+        # true of the leaf, false of the aggregate, until now.
+        return EngineResult(parsed=parsed, leaves=leaves, decision="ask", exotic_escalation=has_exotic)
     if any_unmatched:
         return EngineResult(parsed=parsed, leaves=leaves, decision=None, exotic_escalation=has_exotic)
     if has_exotic:
