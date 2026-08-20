@@ -323,7 +323,7 @@ def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> in
     would answer for an unmatched leaf is not predictable offline, so the
     report says "would be asked", never guesses a verdict.
     """
-    from .engine import evaluate
+    from .engine import _RIDE_ALONG, evaluate
 
     config = load_config(
         explicit=args.config,
@@ -337,10 +337,17 @@ def _explain_offline(args: argparse.Namespace, out: Callable[[str], None]) -> in
     if result.parsed.parse_error:
         out(f"parse:   FAILED — {result.parsed.parse_error} (defaults.on_parse_error={config.defaults.on_parse_error})")
     if result.parsed.exotic:
-        escalating = sorted(set(result.parsed.exotic) & config.ast_escalate)
+        # Must use the ENGINE's predicate, not `exotic & ast_escalate`. They
+        # diverged when CB-5 moved the gate to `exotic - _RIDE_ALONG`: the old
+        # expression dropped any kind missing from `ast_escalate` (`function_def`,
+        # `backticks`), so `explain` would report "not escalating" for commands
+        # the engine escalates.
+        escalating = sorted(set(result.parsed.exotic) - _RIDE_ALONG)
         note = "detected" if not escalating else f"detected, escalating: {', '.join(escalating)}"
         out(f"exotic:  {', '.join(result.parsed.exotic)} ({note})")
-        out("         note: exotic constructs do NOT bypass rules — rules are tried on each leaf's first line")
+        out("         note: exotic constructs do NOT bypass rules — rules are tried on each leaf's")
+        out("         first line, and a substitution's contents are leaves in their own right.")
+        out("         An executing construct escalates even when every leaf is allowed (CB-5).")
     out("")
     out(f"leaves ({len(result.leaves)}):")
     for i, lt in enumerate(result.leaves, 1):
