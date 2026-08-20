@@ -189,14 +189,28 @@ def test_default_rules_match_mined_commands(default_cfg: Config, command: str, e
     [
         "gh repo create faxik/new-thing --public",  # writes → unmatched → classifier
         "gh pr create --fill",
-        # sed -i mutates in-place — must not match sed-read.
-        "sed -i 's/foo/bar/' file.txt",
-        "sed -i.bak 's/foo/bar/' file.txt",
     ],
 )
 def test_gh_write_commands_still_escalate(default_cfg: Config, command: str):
     r = evaluate(command, default_cfg)
     assert r.decision is None, f"{command!r} must not auto-allow"
+
+
+def test_sed_inplace_never_matches_the_read_rule(default_cfg: Config):
+    """`sed -i` mutates in place, so it must never be resolved by `sed-read`.
+
+    This property used to be expressed as "sed -i escalates", alongside the gh
+    write commands. `sed -i` on a project file is now deliberately allowed by
+    `sed-inplace-project` (promoted from measured classifier traffic), so the
+    verdict changed — but the property being protected did not: the READ rule,
+    which is anchored to `sed -n`, must not be what lets a write through.
+    """
+    for command in ("sed -i 's/foo/bar/' file.txt", "sed -i.bak 's/foo/bar/' file.txt"):
+        r = evaluate(command, default_cfg)
+        assert r.leaves[0].matched_rule != "sed-read", command
+        assert r.leaves[0].matched_rule == "sed-inplace-project", command
+    # And the read rule still only covers `sed -n`.
+    assert evaluate("sed -n '1,5p' f.txt", default_cfg).leaves[0].matched_rule == "sed-read"
 
 
 def test_parse_error_classify_routes_to_classifier():

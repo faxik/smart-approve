@@ -455,3 +455,47 @@ def test_no_rule_backtracks_catastrophically_on_a_long_leaf(cfg):
             rule.match.search(cmd)
         elapsed = time.perf_counter() - start
         assert elapsed < 0.25, f"ruleset took {elapsed:.3f}s on {cmd[:60]!r}…"
+
+
+# --- sed -i: promoted from measured classifier traffic (158 commands, 136
+#     classifier-allows vs 22 asks, median 1.7s, and inconsistent between two
+#     near-identical calls two minutes apart).
+
+
+def test_sed_inplace_on_project_files_is_rule_allowed(cfg):
+    for cmd in (
+        r"sed -i '30s/^- \[ \] CB-3214/- [x] CB-3214/' /home/u/w/autosorter/TODO.md",
+        r"sed -i 's/db\.is_environmental(/db._is_environmental(/g' tests/test_db.py",
+        "sed -i 's/x/y/' /tmp/claude-1000/s/f.py",
+        "sed -i.bak 's/x/y/g' src/app/main.js",
+    ):
+        r = evaluate(cmd, cfg)
+        assert r.decision == "allow", cmd
+        assert r.leaves[0].matched_rule == "sed-inplace-project", cmd
+
+
+def test_sed_inplace_escapes_are_not_allowed(cfg):
+    """The four constraints that carry this rule's safety.
+
+    `s///e` executes the pattern space as a shell command and `s///w FILE`
+    writes to an arbitrary path — both escape "edits one named file" entirely.
+    A double-quoted script undergoes expansion. Paths outside the work tree,
+    traversal, and a trailing command must all keep going to the classifier.
+    """
+    for cmd in (
+        "sed -i 's|a|b|e' f.py",                       # e flag EXECUTES
+        "sed -i 's/a/b/e' f.py",
+        "sed -i '1e touch /tmp/x' f.py",
+        "sed -i 's/a/b/w /home/u/.bashrc' f.py",       # w flag writes anywhere
+        'sed -i "s/a/$EVIL/" f.py',                    # double quotes expand
+        "sed -i 's/a/b/' $EVIL",
+        "sed -i 's/a/b/' `echo f`",
+        "sed -i 's/a/b/' ../../etc/evil.conf",         # traversal
+        "sed -i 's/a/b/' /etc/passwd",                 # outside the work tree
+        "sed -i 's/a/b/' /home/u/notes.txt",           # $HOME but not under w/
+        "sed -i 's/a/b/' /var/log/syslog",
+    ):
+        assert evaluate(cmd, cfg).decision != "allow", cmd
+
+    # A deny rule still wins: this rule sits AFTER every deny on purpose.
+    assert evaluate("sed -i 's/a/b/' f.py; sudo rm -rf /x", cfg).decision == "deny"

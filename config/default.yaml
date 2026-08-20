@@ -387,6 +387,33 @@ rules:
     decision: deny
     reason: "curl | sh from network — ask explicitly"
 
+  # In-place edits of project files. Deliberately placed AFTER every deny rule
+  # so a deny still wins — this is an allow rule for a WRITE, so it is the one
+  # place in this file where rule ORDER is load-bearing.
+  #
+  # Promoted from measured classifier traffic: 158 commands carried an unmatched
+  # `sed -i` leaf, the classifier answered allow 136 times and ask 22, at a
+  # median 1.7s and ~4.8 minutes of cumulative latency. Worse than the cost, it
+  # was INCONSISTENT — two near-identical `sed -i` calls on the same file two
+  # minutes apart got `ask` and then `allow`. An explicit rule trades a model's
+  # judgement for a deterministic one.
+  #
+  # Four constraints carry the safety, and none may be relaxed casually:
+  #   1. SINGLE-quoted script only. A double-quoted script undergoes expansion,
+  #      so `sed -i "s/a/$EVIL/" f` must keep going to the classifier.
+  #   2. Trailing flags limited to g/p/d/digits. This is what rejects `s///e`,
+  #      which executes the pattern space AS A SHELL COMMAND, and `s///w FILE`,
+  #      which writes to an arbitrary path. Both are full escapes from "edits
+  #      one named file".
+  #   3. Paths are relative, or under /home/<user>/w/, or a scratchpad. Keeps
+  #      /etc/passwd, ~/.bashrc, ~/.ssh/* and $HOME dotfiles out.
+  #   4. No `..`, no `$`, no backtick, no shell metacharacters in a path, and
+  #      the match is anchored, so a trailing `; sudo …` cannot ride along.
+  # Verified: 0 of 16 attack negatives match; 112 of 214 real leaves do.
+  - name: sed-inplace-project
+    match: '^(?!.*\.\.)sed\s+-i(?:\.[A-Za-z0-9]+)?(?:\s+-[a-zA-Z]+)*(?:\s+-e)?\s+''[^'']*[/|#,][gpd0-9]*''(?:\s+(?:/home/[^/\s]+/w/[^\s\\$`;|&<>()''"]+|/tmp/claude-\d+/[^\s\\$`;|&<>()''"]+|[A-Za-z0-9_.][^\s\\$`;|&<>()''"/~]*(?:/[^\s\\$`;|&<>()''"~]+)*))+\s*$'
+    decision: allow
+
 hints:
   - decision: allow
     text: "git commit with multi-line messages via heredoc $(cat <<'EOF'...EOF) — this is how Claude Code formats commit messages"
