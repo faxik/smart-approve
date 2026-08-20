@@ -67,7 +67,12 @@ rules:
     match: '^rm\s+-[a-zA-Z]*[rf]'
     decision: deny
 
-# AST node types that force classifier fallback (no regex wins here)
+# AST node types that force classifier fallback (no regex wins here).
+#
+# SUPERSEDED by CB-5 — kept for config compatibility, but it no longer gates.
+# The engine now escalates on `set(exotic) - engine._RIDE_ALONG`, subtracting
+# from the FULL detected set rather than intersecting with this list, so an
+# unlisted kind still escalates (fail-closed). Editing this key has no effect.
 ast_escalate:
   - command_substitution   # $(...)
   - process_substitution   # <(...) >(...)

@@ -25,9 +25,69 @@ class ParsedCommand:
 
 _EXOTIC_FIRST_WORDS = {"eval": "eval", "source": "source_or_dot", ".": "source_or_dot", "coproc": "coproc"}
 
+# LEXICAL BACKSTOP (CB-5). Substitution syntax found in the RAW text, whatever
+# the AST says about it. This is not belt-and-braces — it is the only mechanism
+# that covers constructs neither backend exposes as a node:
+#
+#   ls ${x#$(sudo rm -rf /x)}   tree-sitter types the PATTERN half of a
+#                               parameter expansion as a `regex` node: no leaf,
+#                               no exotic tag, `exotic == []`. Bash executes it.
+#   cat <<-EOF\n\t$(...)\nEOF   one leading tab and only `heredoc` was flagged.
+#   echo $(> /tmp/file)         a redirect-only substitution has no inner
+#                               `command` node at all, yet truncates the file.
+#   ls ${x:-$(...)}             bashlex stores the whole expansion as an opaque
+#                               ParameterNode.value with no substitution child;
+#                               heredoc bodies are likewise opaque. tree-sitter
+#                               is NOT a declared dependency (see pyproject.toml),
+#                               so the bashlex-only install is supported and must
+#                               not be the weaker gate.
+#
+# Over-flagging is deliberate and safe in this direction: `$((` arithmetic and
+# `$(` inside single quotes are tagged too. A false tag costs one classifier
+# call; a missed one costs silent arbitrary execution. Mirrors the pre-existing
+# textual backtick guard this replaces.
+# Bash removes an unquoted backslash-newline BEFORE interpreting anything, so
+# `$\<newline>(cmd)` is a `$(` the raw text does not contain. Rejoin first.
+_LINE_CONTINUATION = re.compile(r"\\\n")
 
-def _finalize(cmd: str, leaves: list[str], exotic: list[str]) -> ParsedCommand:
-    """Post-pass exotic flagging, dedup, and fallback — shared by both backends."""
+_LEXICAL_PATTERNS = (
+    (re.compile(r"\$\("), "command_substitution"),
+    (re.compile(r"`"), "command_substitution"),
+    (re.compile(r"<\("), "process_substitution"),
+    (re.compile(r">\("), "process_substitution"),
+    # bash 5.3 alternate command substitutions: `${ cmd; }` and `${| cmd; }`.
+    # They run in the CURRENT shell and keep side effects. Neither backend
+    # models them and neither contains `$(`. Verified executing on 5.3.9:
+    # `echo ${ touch /tmp/M; }` creates the file. `${x}` never has a space or a
+    # pipe in that position, so this cannot collide with ordinary expansion.
+    (re.compile(r"\$\{[\s|]"), "command_substitution"),
+    # `${x@P}` re-expands the value as a prompt, which performs command
+    # substitution — so a `$(` can be assembled at runtime and never appear in
+    # the command text: `x="$"; x+="(cmd)"; echo "${x@P}"` executes it.
+    # Requires a LETTER before `}`, so `${a[@]}` (array expansion) is untouched.
+    (re.compile(r"@[A-Za-z]\}"), "param_transform"),
+)
+
+
+def _lexical_exotic(cmd: str) -> list[str]:
+    flat = _LINE_CONTINUATION.sub("", cmd)
+    return [tag for pattern, tag in _LEXICAL_PATTERNS if pattern.search(flat)]
+
+
+def _finalize(cmd: str, leaves: list[str], exotic: list[str], saw_top_level: bool = True) -> ParsedCommand:
+    """Post-pass exotic flagging, dedup, and fallback — shared by both backends.
+
+    ``saw_top_level`` says whether any TOP-LEVEL execution unit was recorded.
+    The fallback must key on that, NOT on ``leaves`` being empty: a bare
+    assignment or declaration (`X=$(date)`, `export PATH=$(pwd)/evil:$PATH`)
+    emits no leaf of its own, so it relied on the empty-list fallback to reach
+    the rules at all. Once substitution contents became leaves the list was no
+    longer empty, the fallback stopped firing, and the outer text escaped rule
+    review entirely — measured `export PATH=$(pwd)/evil:$PATH` going from
+    classifier-escalated to ALLOW. Found by both adversarial reviewers.
+    """
+    if not saw_top_level:
+        leaves = [cmd, *leaves]
     for leaf in leaves:
         parts = leaf.split(None, 1)
         if parts:
@@ -36,7 +96,7 @@ def _finalize(cmd: str, leaves: list[str], exotic: list[str]) -> ParsedCommand:
                 exotic.append(tag)
     return ParsedCommand(
         leaves=leaves or [cmd],
-        exotic=list(dict.fromkeys(exotic)),
+        exotic=list(dict.fromkeys([*exotic, *_lexical_exotic(cmd)])),
     )
 
 
@@ -101,12 +161,26 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
     leaves: list[str] = []
     exotic: list[str] = []
 
-    def walk(node: object, in_sub: bool) -> None:
+    saw_top_level = False
+
+    def walk(node: object, in_sub: bool, sub_depth: int) -> None:
+        nonlocal saw_top_level
         ntype = node.type
 
         # Detect exotic constructs at all depths.
         if ntype in _TS_EXOTIC_MAP:
             exotic.append(_TS_EXOTIC_MAP[ntype])
+
+        # A substitution EXECUTES; its contents are code, not argument data.
+        # Descend at leaf level so every inner command becomes its own leaf and
+        # the rules — deny rules above all — apply to it. Before this, nothing
+        # inside `$(...)` was ever rule-evaluated, so `ls $(sudo rm -rf /x)`
+        # rule-allowed on the strength of `ls` alone. `sub_depth` keeps these
+        # leaves from counting as top-level coverage (see `_finalize`).
+        if ntype in _TS_SUBSTITUTION_TYPES:
+            for child in node.children:
+                walk(child, False, sub_depth + 1)
+            return
 
         # Extract top-level execution units as leaves.
         if not in_sub and ntype in ("command", "redirected_statement"):
@@ -123,7 +197,7 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
                 body = node.child_by_field_name("body")
                 if body is None or body.type not in _TS_SINGLE_UNIT_BODY_TYPES:
                     for child in node.children:
-                        walk(child, in_sub)
+                        walk(child, in_sub, sub_depth)
                     return
             # Skip command nodes whose parent is redirected_statement —
             # the parent captures the full text including redirections.
@@ -131,17 +205,18 @@ def _ts_parse(cmd: str) -> ParsedCommand | None:
                 pass  # parent handles this
             else:
                 leaves.append(data[node.start_byte : node.end_byte].decode("utf-8", "replace"))
+                if sub_depth == 0:
+                    saw_top_level = True
             # Descend to detect exotic constructs inside.
             for child in node.children:
-                walk(child, True)
+                walk(child, True, sub_depth)
             return
 
-        child_in_sub = in_sub or ntype in _TS_SUBSTITUTION_TYPES
         for child in node.children:
-            walk(child, child_in_sub)
+            walk(child, in_sub, sub_depth)
 
-    walk(root, False)
-    return _finalize(cmd, leaves, exotic)
+    walk(root, False, 0)
+    return _finalize(cmd, leaves, exotic, saw_top_level)
 
 
 # ── bashlex backend (fallback) ─────────────────────────────────────────
@@ -153,6 +228,8 @@ _BASHLEX_EXOTIC_NODE_KINDS = {
     "functiondef": "function_def",
     "coproc": "coproc",
 }
+
+_BASHLEX_SUBSTITUTION_KINDS = frozenset({"commandsubstitution", "processsubstitution"})
 
 # bashlex can't match closing delimiters when the heredoc tag is quoted
 # (<<'EOF' or <<"EOF"). We strip the quotes on retry so the parse succeeds;
@@ -204,20 +281,43 @@ def _bashlex_parse(cmd: str) -> ParsedCommand:
 
     trees, err, heredoc_retry_hit = _bashlex_parse_with_retry(cmd)
     if trees is None:
-        return ParsedCommand(leaves=[cmd], exotic=exotic, parse_error=err)
+        # The lexical backstop has to be applied here too — this path never
+        # reaches `_finalize`, and a command that fails to parse is exactly the
+        # one whose structure we know least about.
+        return ParsedCommand(
+            leaves=[cmd],
+            exotic=list(dict.fromkeys([*exotic, *_lexical_exotic(cmd)])),
+            parse_error=err,
+        )
     if heredoc_retry_hit:
         # bashlex sometimes elides the heredoc node from the retried AST, so
         # flag it here to guarantee the engine escalates.
         exotic.append("heredoc")
 
     leaves: list[str] = []
+    saw_top_level = False
 
-    def walk(node: object, in_word: bool) -> None:
+    def walk(node: object, in_word: bool, sub_depth: int) -> None:
+        nonlocal saw_top_level
         kind = getattr(node, "kind", None)
 
         # Detect exotic constructs regardless of depth.
         if kind in _BASHLEX_EXOTIC_NODE_KINDS:
             exotic.append(_BASHLEX_EXOTIC_NODE_KINDS[kind])
+
+        # Substitution contents are code — emit them as leaves, mirroring the
+        # tree-sitter backend. This only reaches the substitutions bashlex
+        # actually models as nodes; the ones it flattens into an opaque
+        # ParameterNode/HeredocNode value are caught by the lexical backstop.
+        if kind in _BASHLEX_SUBSTITUTION_KINDS:
+            for part in getattr(node, "parts", []) or []:
+                walk(part, False, sub_depth + 1)
+            for child in getattr(node, "list", []) or []:
+                walk(child, False, sub_depth + 1)
+            inner = getattr(node, "command", None)
+            if inner is not None and not isinstance(inner, (str, bytes)):
+                walk(inner, False, sub_depth + 1)
+            return
 
         # Record top-level simple commands as leaves (but still descend to find
         # any exotic constructs nested inside their words).
@@ -225,23 +325,25 @@ def _bashlex_parse(cmd: str) -> ParsedCommand:
             pos = getattr(node, "pos", None)
             if pos and len(pos) == 2:
                 leaves.append(cmd[pos[0] : pos[1]])
+                if sub_depth == 0:
+                    saw_top_level = True
             for part in getattr(node, "parts", []) or []:
-                walk(part, True)
+                walk(part, True, sub_depth)
             return
 
         next_in_word = in_word or kind == "word"
         for part in getattr(node, "parts", []) or []:
-            walk(part, next_in_word)
+            walk(part, next_in_word, sub_depth)
         for child in getattr(node, "list", []) or []:
-            walk(child, next_in_word)
+            walk(child, next_in_word, sub_depth)
         inner = getattr(node, "command", None)
         if inner is not None and not isinstance(inner, (str, bytes)):
-            walk(inner, next_in_word)
+            walk(inner, next_in_word, sub_depth)
 
     for tree in trees:
-        walk(tree, False)
+        walk(tree, False, 0)
 
-    return _finalize(cmd, leaves, exotic)
+    return _finalize(cmd, leaves, exotic, saw_top_level)
 
 
 # ── public API ─────────────────────────────────────────────────────────

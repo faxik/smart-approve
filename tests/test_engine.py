@@ -64,11 +64,28 @@ def test_rewrite_git_dash_c():
 
 
 def test_exotic_in_arg_rules_resolve():
-    """Exotic in argument position — rules still match the outer command."""
+    """Exotic in argument position — rules match, but the substitution ESCALATES.
+
+    Inverted by CB-5. This previously asserted `allow` / `escalation False`,
+    which was the bug: `$(id)` executes before `ls` runs, so an allow rule on
+    the outer command was silently approving whatever the substitution held.
+    With only an `ls` rule configured, the inner `id` leaf has no rule of its
+    own, so this escalates on the unmatched path as well.
+    """
     c = _cfg([_rule("ls", r"^ls(\s|$)", "allow")])
     r = evaluate("ls $(id)", c)
-    assert r.decision == "allow"
-    assert r.exotic_escalation is False
+    assert r.decision is None
+    assert r.exotic_escalation is True
+    assert r.parsed.leaves == ["ls $(id)", "id"]
+
+
+def test_exotic_escalates_even_when_every_leaf_is_allowed():
+    """The exact CB-5 gate: all-allow must not swallow an executing construct."""
+    c = _cfg([_rule("ls", r"^ls(\s|$)", "allow"), _rule("id", r"^id(\s|$)", "allow")])
+    r = evaluate("ls $(id)", c)
+    assert all(lt.decision == "allow" for lt in r.leaves)
+    assert r.decision is None  # NOT "allow"
+    assert r.exotic_escalation is True
 
 
 def test_exotic_unmatched_escalates():
@@ -200,7 +217,7 @@ def test_parse_error_ask_preserves_backcompat():
     assert r.decision == "ask"
 
 
-def test_quoted_heredoc_commit_resolved_by_rules():
+def test_quoted_heredoc_commit_escalates_on_its_substitution():
     # The real command from the log — heredoc + command substitution in the
     # commit message argument.  Both leaves (add, commit) match rules, so
     # the exotic content doesn't force classifier escalation.
@@ -214,9 +231,18 @@ def test_quoted_heredoc_commit_resolved_by_rules():
     c = _cfg([_rule("git-write", r"^git\s+(add|commit)", "allow")])
     r = evaluate(cmd, c)
     assert r.parsed.parse_error is None
-    assert r.decision == "allow"
-    assert len(r.leaves) == 2
-    assert all(lt.decision == "allow" for lt in r.leaves)
+    # CB-5: the `$(cat <<'EOF' ...)` wrapper is a command substitution, so the
+    # inner `cat` is now its own leaf and the substitution escalates rather than
+    # riding along on the two git rules. The heredoc BODY is still data — a
+    # heredoc carrying no substitution does not escalate (see
+    # test_cb5_substitution.py::test_heredoc_body_alone_still_rides_along).
+    assert r.decision is None
+    assert r.exotic_escalation is True
+    # Three leaves now: `git add`, `git commit`, and the substitution's `cat`.
+    # This minimal config only has a git rule, so the `cat` leaf is unmatched —
+    # which is itself the point: that leaf was previously invisible to rules.
+    assert len(r.leaves) == 3
+    assert [lt.decision for lt in r.leaves] == ["allow", "allow", None]
 
 
 def test_piped_jq_sort_uniq_fully_allowed(default_cfg: Config):

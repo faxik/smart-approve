@@ -140,9 +140,18 @@ def test_known_backend_divergence_bare_variable_assignments():
 
     # The safety property the divergence must never cost:
     assert parse("a=1 ; sudo rm -rf /x").leaves == ["sudo rm -rf /x"]
-    # And an assignment carrying a substitution is still flagged, not dropped:
+    # And an assignment carrying a substitution is still flagged, not dropped.
+    #
+    # CB-5 STRENGTHENED this, and the strengthening is the whole point: the
+    # outer assignment text must STILL be a leaf (it was briefly not — once
+    # substitution contents became leaves, the `leaves or [cmd]` fallback
+    # stopped firing and `export PATH=$(pwd)/evil:$PATH` went to ALLOW), and the
+    # inner command must ALSO be a leaf so deny rules reach it.
+    #
+    # Re-pinning this to `["rm -rf /tmp/x"]` would silently ratify that
+    # regression. Both leaves are required.
     p = parse("a=$(rm -rf /tmp/x)")
-    assert p.leaves == ["a=$(rm -rf /tmp/x)"]
+    assert p.leaves == ["a=$(rm -rf /tmp/x)", "rm -rf /tmp/x"]
     assert "command_substitution" in p.exotic
 
 
@@ -204,13 +213,35 @@ def test_quoted_heredoc_double_quoted_delimiter_parses():
 # ── tree-sitter specific tests ─────────────────────────────────────────
 
 
-def test_single_quoted_backticks_no_false_positive():
-    """CB-2: backticks inside single-quoted strings are literal text, not
-    command substitution. The old raw-string check produced a false positive."""
+def test_single_quoted_backticks_are_flagged_deliberately():
+    """CB-2's no-false-positive property was DELIBERATELY given up for CB-5.
+
+    Backticks inside single quotes are literal to bash, so flagging them is a
+    false positive in the strict sense, and CB-2 originally removed a raw-string
+    check for exactly that reason. CB-5 brought a raw-text scan back on purpose:
+    every STRUCTURAL approach was disproven during review (tree-sitter types the
+    substitution in `${x#...}` as a `regex` node; `$(> f)` has no inner command
+    node; bashlex flattens parameter expansions to opaque strings), so the
+    lexical backstop is the only mechanism left that cannot be reasoned around.
+
+    Making it quote-aware would reintroduce the very reasoning — "this text
+    cannot execute" — that was falsified twice, and it is not even true here:
+    `x='$(cmd)'; eval "$x"` and `${x@P}` both execute single-quoted substitution
+    text.
+
+    Measured price of keeping it dumb: 184 of 39,445 logged commands (0.47%)
+    carry substitution syntax ONLY inside single quotes and now take one
+    classifier call. The verdict is never weakened — an over-flag escalates, it
+    never allows.
+    """
     p = parse("git commit -m 'fix `variable_name` issue'")
-    assert "backticks" not in p.exotic
-    assert "command_substitution" not in p.exotic
+    assert "command_substitution" in p.exotic
     assert p.parse_error is None
+
+    # The property that still matters: a command with NO substitution syntax
+    # anywhere is not flagged, so ordinary traffic is untouched.
+    clean = parse("git commit -m 'fix variable_name issue'")
+    assert clean.exotic == []
 
 
 def test_double_quoted_backticks_are_real_substitution():

@@ -405,23 +405,27 @@ def test_git_split_rule_names_tools_and_fails_closed(cfg):
     assert evaluate("/home/u/bin/git-split2.py -y a && sudo rm -rf /x", cfg).decision == "deny"
 
 
-def test_substitution_in_arguments_is_not_escalated_once_a_rule_matches(cfg):
-    """KNOWN GAP — tracked as CB-5. Pinned so it is a decision, not a surprise.
+def test_substitution_in_arguments_is_escalated_even_when_a_rule_matches(cfg):
+    """CB-5 CLOSED. This test previously pinned the gap; it now pins the fix.
 
-    `ast_escalate` lists `command_substitution`, but the engine escalates only
-    an UNMATCHED leaf — so any allow rule overrides it and the substitution,
-    which EXECUTES, rides along. The documented invariant ("rules are tried
-    first; only an unmatched leaf falls to the classifier") was written for
-    heredocs, whose bodies really are argument data; `$(…)` is code, and the
-    two got the same treatment.
+    The gap: `ls $(rm -rf /x)` rule-allowed on the strength of `ls`, carrying an
+    executing substitution with it. The fix needed three mechanisms, because
+    each one alone was disproven during adversarial review — enumeration of
+    substitution contents, a top-level-aware leaf fallback, and a lexical
+    backstop for constructs no AST exposes. See tests/test_cb5_substitution.py
+    for the full construct matrix.
 
-    Closing it is an engine change (escalate a MATCHED leaf too), not a rule
-    fix, and it needs `ast_escalate` split by data-vs-executes. Measured cost:
-    2.2% of rule-allows. This test asserts today's behaviour so the change is
-    visible when someone makes it — update it, don't delete it.
+    Kept here, in the packaged-ruleset suite, because what matters is the
+    behaviour against the config that actually ships.
     """
-    assert evaluate("ls $(rm -rf /x)", cfg).decision == "allow"
-    assert evaluate("git status $(rm -rf /x)", cfg).decision == "allow"
+    assert evaluate("ls $(rm -rf /x)", cfg).decision != "allow"
+    assert evaluate("git status $(rm -rf /x)", cfg).decision != "allow"
+    # A dangerous inner command is now DENIED outright, not merely escalated:
+    # deny rules reach inside the substitution.
+    assert evaluate("ls $(sudo rm -rf /x)", cfg).decision == "deny"
+    # NOT load-bearing: `ast_escalate` no longer gates anything (the engine uses
+    # `set(exotic) - _RIDE_ALONG`). Kept only to pin that the packaged key still
+    # parses for config compatibility. Deleting it would not weaken the fix.
     assert "command_substitution" in cfg.ast_escalate
 
 

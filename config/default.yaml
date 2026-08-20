@@ -230,12 +230,13 @@ rules:
   # the shell's inability to rewrite the path afterwards.
   #
   # The leading `(?!.*[$\x60])` also rejects substitution/expansion ANYWHERE in
-  # the leaf, arguments included. That is stricter than the rest of this file,
-  # where `ls $(rm -rf /x)` currently rule-allows: `ast_escalate` lists
-  # command_substitution, but the engine only escalates an UNMATCHED leaf, so
-  # any allow rule overrides it. Split invocations take file paths and range
-  # specs — never a substitution — so failing closed here costs nothing. It
-  # does NOT fix the general case; see the note in CLAUDE.md.
+  # the leaf, arguments included. This was written when `ls $(rm -rf /x)` still
+  # rule-allowed and was the only defence available at the time.
+  #
+  # CB-5 has since closed the general case in the engine, so this is no longer
+  # load-bearing — it is now defence in depth. Keep it: split invocations take
+  # file paths and range specs, never a substitution, so failing closed costs
+  # nothing here.
   - name: git-split-tools
     match: '^(?!.*\.\.)(?!.*[$\x60])(?:(?:[^\s\\]*/)?(?:python3?|bash)\s+)?/home/[^/\s]+/bin/git-split2?(?:\.py)?(\s|$)'
     decision: allow
